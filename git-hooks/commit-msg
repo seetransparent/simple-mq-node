@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+. ~/.nvm/nvm.sh
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+node "${DIR}/commit-msg.js" "${1}"
