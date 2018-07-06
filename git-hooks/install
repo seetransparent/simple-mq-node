@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+HOOKS_DIR="$DIR/../.git/hooks"
+HOOKS_DIR="`cd "${HOOKS_DIR}";pwd`"
+COMMIT_HOOK="$HOOKS_DIR/commit-msg"
+if [ -f "$COMMIT_HOOK" ]; then
+    echo "Existing hook already installed! There is already a file or symlink in $COMMIT_HOOK; Please check if it is what you want or proceed to installation manually"
+    exit 1
+fi
+# Create symlik to file
+MY_HOOKS="$DIR"
+cp "$MY_HOOKS/commit-msg.js" "$COMMIT_HOOK.js"
+cp "$MY_HOOKS/commit-msg" "$COMMIT_HOOK"
+echo "Hook copied to $COMMIT_HOOK"

@@ -26,7 +26,7 @@
     "test": "npm run test-only",
     "test-only": "jest --coverage",
     "test:watch": "jest --watch",
-    "git-hooks": "mv ./.git/hooks/ ./.git/hooks_bck; ln -s ../git-hooks ./.git/hooks"
+    "git-hooks": "./git-hooks/install"
   },
   "author": "Jakub Synowiec <github@jakubsynowiec.info>",
   "license": "APLv2",
