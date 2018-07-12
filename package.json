@@ -20,7 +20,7 @@
   "scripts": {
     "clean": "rimraf coverage build tmp",
     "build": "tsc -p tsconfig.release.json",
-    "build-test": "tsc -p tsconfig.json",
+    "build-test": "tsc -p tsconfig.json --noEmit",
     "watch": "tsc -w -p tsconfig.release.json",
     "lint": "tslint -t stylish --project \"tsconfig.json\"",
     "pretest": "npm run lint",
