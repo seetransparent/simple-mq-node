@@ -8,10 +8,6 @@ describe('greeter function', () => {
 
   let hello: string;
 
-  let a: number;
-
-  a = 'fds';
-
   // Act before assertions
   beforeAll(async () => {
     const p: Promise<string> = greeter(name);
