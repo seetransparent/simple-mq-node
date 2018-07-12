@@ -22,4 +22,3 @@ pipeline:
     secrets:
       - ssh_key
       - deploy_login_password
-branches: master
