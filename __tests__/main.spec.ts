@@ -6,7 +6,7 @@ describe('greeter function', () => {
 
   const name: string = 'John';
 
-  let hello: number;
+  let hello: string;
 
   // Act before assertions
   beforeAll(async () => {
