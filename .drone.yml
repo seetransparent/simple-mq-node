@@ -16,7 +16,7 @@ pipeline:
       - npm install -g git+ssh://git@bitbucket.org/seetransparent/trn.git
       - trn deploy-login "$DEPLOY_LOGIN_PASSWORD"
       - npm install
-      - npm run build
+      - npm run build-test
       - npm run pretest
       - npm run test
     secrets:
