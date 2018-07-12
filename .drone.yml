@@ -1,0 +1,24 @@
+---
+clone:
+  git:
+    image: plugins/git
+    depth: 1
+pipeline:
+  lint:
+    image: node:8.11
+    commands:
+      - npm i npm@latest -g
+      - mkdir -p ~/.ssh
+      - echo "$SSH_KEY" | base64 -d > ~/.ssh/id_rsa
+      - chmod 600 ~/.ssh/id_rsa
+      - ssh-keyscan bitbucket.org >> ~/.ssh/known_hosts
+      - chmod 644 ~/.ssh/known_hosts
+      - npm install -g git+ssh://git@bitbucket.org/seetransparent/trn.git
+      - trn deploy-login "$DEPLOY_LOGIN_PASSWORD"
+      - npm install
+      - npm run build-test
+      - npm run pretest
+      - npm run test
+    secrets:
+      - ssh_key
+      - deploy_login_password
