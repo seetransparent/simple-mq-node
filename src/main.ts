@@ -11,7 +11,8 @@ export enum Delays {
  * Returns a Promise<string> that resolves after given time.
  *
  * @param {string} name - A name.
- * @param {number=} [delay=Delays.Medium] - Number of milliseconds to delay resolution of the Promise.
+ * @param {number=} [delay=Delays.Medium] - Number of milliseconds
+ * to delay resolution of the Promise.
  * @returns {Promise<string>}
  */
 function delayedHello(name: string, delay: number = Delays.Medium): Promise<string> {
