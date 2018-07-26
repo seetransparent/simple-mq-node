@@ -17,7 +17,6 @@ pipeline:
       - trn deploy-login "$DEPLOY_LOGIN_PASSWORD"
       - npm install
       - npm run build-test
-      - npm run pretest
       - npm run test
     secrets:
       - ssh_key
