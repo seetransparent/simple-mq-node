@@ -3,7 +3,6 @@
     "tslint-config-airbnb"
   ],
   "rules": {
-    "await-promise": [true, "Thenable"],
     "no-multi-spaces": true
   }
 }
