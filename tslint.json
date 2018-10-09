@@ -3,6 +3,17 @@
     "tslint-config-airbnb"
   ],
   "rules": {
-    "no-multi-spaces": true
+    "await-promise": [true, "Thenable"],
+    "no-multi-spaces": true,
+    "function-name": [
+      true,
+      {
+        "method-regex": "^_?[a-z][a-zA-Z\\d]+$",
+        "private-method-regex": "^_?[a-z][a-zA-Z\\d]+$",
+        "protected-method-regex": "^_?[a-z][a-zA-Z\\d]+$",
+        "static-method-regex": "^[a-z][a-zA-Z\\d]+$",
+        "function-regex": "^[a-z][a-zA-Z\\d]+$"
+      }
+    ]
   }
 }
