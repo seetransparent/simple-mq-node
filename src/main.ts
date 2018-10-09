@@ -15,7 +15,7 @@ export enum Delays {
  * to delay resolution of the Promise.
  * @returns {Promise<string>}
  */
-function delayedHello(name: string, delay: number = Delays.Medium): Promise<string> {
+function delayedHello(name: string, delay: number): Promise<string> {
   return new Promise(
     (resolve: (value?: string) => void) => setTimeout(
       () => resolve(`Hello, ${name}`),
