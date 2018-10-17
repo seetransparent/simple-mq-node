@@ -2,7 +2,7 @@
   "name": "node-typescript-boilerplate",
   "version": "0.0.0",
   "description": "Minimalistic boilerplate to quick-start Node.js development in TypeScript.",
-  "author": "The Transparent Team <info@seetransparent.com>",
+  "author": "The Transparent Team",
   "license": "",
   "main": "build/src/main.js",
   "ts:main": "src/main.ts",
