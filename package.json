@@ -2,6 +2,11 @@
   "name": "node-typescript-boilerplate",
   "version": "0.0.0",
   "description": "Minimalistic boilerplate to quick-start Node.js development in TypeScript.",
+  "author": "The Transparent Team",
+  "license": "",
+  "main": "build/src/main.js",
+  "ts:main": "src/main.ts",
+  "types": "src/main.ts",
   "engineStrict": true,
   "engines": {
     "node": ">= 8.9.0"
@@ -9,9 +14,10 @@
   "devDependencies": {
     "@types/jest": "~22.2.3",
     "@types/node": "~8.10.18",
-    "jest": "~23.1.0",
+    "jest": "~23.5.0",
     "rimraf": "~2.6.2",
-    "ts-jest": "~22.4.6",
+    "ts-jest": "~23.1.4",
+    "babel-jest": "^23.0.0",
     "tslint": "~5.10.0",
     "tslint-config-airbnb": "^5.9.2",
     "tsutils": "~2.27.1",
@@ -19,6 +25,7 @@
   },
   "scripts": {
     "clean": "rimraf coverage build tmp",
+    "prepublish": "npm run build",
     "build": "tsc -p tsconfig.release.json",
     "build-test": "tsc -p tsconfig.json --noEmit",
     "watch": "tsc -w -p tsconfig.release.json",
@@ -29,9 +36,32 @@
     "test:watch": "jest --watch",
     "git-hooks": "./git-hooks/install"
   },
-  "author": "Jakub Synowiec <github@jakubsynowiec.info>",
-  "license": "APLv2",
-  "dependencies": {
-    "tslib": "~1.9.2"
+  "jest": {
+    "testEnvironment": "node",
+    "transform": {
+      "^.+\\.tsx?$": "ts-jest"
+    },
+    "coverageThreshold": {
+      "global": {
+        "branches": 100,
+        "functions": 100,
+        "lines": 100,
+        "statements": 100
+      }
+    },
+    "moduleFileExtensions": [
+      "ts",
+      "tsx",
+      "js",
+      "jsx",
+      "json",
+      "node"
+    ],
+    "testRegex": "(/tests/.*|(\\.|/)(test|spec))\\.(ts|js)x?$",
+    "coverageDirectory": "coverage",
+    "collectCoverageFrom": [
+      "src/**/*.{ts,tsx,js,jsx}",
+      "!src/**/*.d.ts"
+    ]
   }
 }

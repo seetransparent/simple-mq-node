@@ -2,8 +2,10 @@
   "compilerOptions": {
     "target": "es6",
     "module": "commonjs",
+    "declaration": true,
     "moduleResolution": "node",
-    "allowSyntheticDefaultImports": true,
+    "allowSyntheticDefaultImports": false,
+    "removeComments": false,
     "allowJs": false,
     "importHelpers": true,
     "jsx": "react",
@@ -14,13 +16,17 @@
     "noImplicitReturns": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noImplicitAny": false,
-    "noImplicitThis": false,
-    "strictNullChecks": false,
-    "declaration": true
+    "noImplicitAny": true,
+    "noImplicitThis": true,
+    "strictNullChecks": true,
+    "typeRoots": ["./types", "./node_modules/@types"]
   },
   "include": [
     "src/**/*",
-    "__tests__/**/*"
+    "types/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "build"
   ]
 }

@@ -15,7 +15,7 @@ export enum Delays {
  * to delay resolution of the Promise.
  * @returns {Promise<string>}
  */
-function delayedHello(name: string, delay: number = Delays.Medium): Promise<string> {
+function delayedHello(name: string, delay: number): Promise<string> {
   return new Promise(
     (resolve: (value?: string) => void) => setTimeout(
       () => resolve(`Hello, ${name}`),
@@ -27,7 +27,7 @@ function delayedHello(name: string, delay: number = Delays.Medium): Promise<stri
 // Below are examples of using TSLint errors suppression
 // Here it is suppressing missing type definitions for greeter function
 
-export async function greeter(name) { // tslint:disable-line typedef
+export async function greeter(name: string) { // tslint:disable-line typedef
   // tslint:disable-next-line no-unsafe-any no-return-await
   return await delayedHello(name, Delays.Long);
 }
