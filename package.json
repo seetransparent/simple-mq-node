@@ -29,7 +29,7 @@
     "build": "tsc -p tsconfig.release.json",
     "build-test": "tsc -p tsconfig.json --noEmit",
     "watch": "tsc -w -p tsconfig.release.json",
-    "lint": "tslint -t stylish --project \"tsconfig.json\"",
+    "lint": "tslint -t stylish -p tsconfig.json -c tslint.json",
     "pretest": "npm run lint",
     "test": "npm run test-only",
     "test-only": "jest --coverage",
@@ -63,5 +63,11 @@
       "src/**/*.{ts,tsx,js,jsx}",
       "!src/**/*.d.ts"
     ]
+  },
+  "dependencies": {
+    "@types/amqplib": "^0.5.8",
+    "@types/uuid": "^3.4.4",
+    "amqplib": "^0.5.2",
+    "uuid": "^3.3.2"
   }
 }
