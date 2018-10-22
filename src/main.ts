@@ -1,2 +1,2 @@
-export * from './amqp';
 export * from './types';
+export * from './amqp';

@@ -7,13 +7,10 @@ export interface ConnectorOptions {
 }
 
 export interface Connector {
-  name: string;
-  connect(): Promise<void>;
+  connect(): Promise<any>;
   disconnect(): Promise<void>;
   ping(): Promise<void>;
 }
-
-export interface RPCOptions extends ConnectorOptions { }
 
 export interface RPCConnector extends Connector {
   rpc(queue: string, type: string, data: any, options?: AnyObject): Promise<any>;
