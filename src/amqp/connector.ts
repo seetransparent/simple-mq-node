@@ -2,61 +2,62 @@ import * as amqp from 'amqplib';
 import * as uuid5 from 'uuid/v5';
 import * as uuid4 from 'uuid/v4';
 
-import { RPCConnector } from '../types';
+import { MessageQueueConnector } from '../types';
 import { ConnectionManager, ConnectionManagerOptions } from '../utils';
-import { AMQPRCChannel, AMQPRPCChannelOptions } from './channel';
-import { AMQPConnection } from './types';
+import { AMQPChannel, AMQPChannelOptions } from './channel';
+import { AMQPDriverConnection, Omit } from './types';
 
-type Omit<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>>;
-
-export interface AMQPRPCConnectorOptions extends
-Omit<ConnectionManagerOptions<AMQPConnection>, 'connect' | 'disconnect'> {
+export interface AMQPConnectorOptions extends
+Omit<ConnectionManagerOptions<AMQPDriverConnection>, 'connect' | 'disconnect'> {
   name: string;
   uri?: string;
-  connect?: ConnectionManagerOptions<AMQPConnection>['connect'];
-  disconnect?: ConnectionManagerOptions<AMQPConnection>['disconnect'];
+  exchange?: string;
+  connect?: ConnectionManagerOptions<AMQPDriverConnection>['connect'];
+  disconnect?: ConnectionManagerOptions<AMQPDriverConnection>['disconnect'];
   timeout?: number;
 }
 
-interface AMQPRPCConnectorFullOptions extends
-ConnectionManagerOptions<AMQPConnection>,
-Omit<AMQPRPCConnectorOptions, 'connect' | 'disconnect'> {
+interface AMQPConnectorFullOptions extends
+ConnectionManagerOptions<AMQPDriverConnection>,
+Omit<AMQPConnectorOptions, 'connect' | 'disconnect'> {
+  exchange: string;
   uri: string;
   timeout: number;
 }
 
-export interface AMQPRPCOperationBaseOptions {
+export interface AMQPOperationChannelOptions
+extends Omit<AMQPChannelOptions, 'manager'> {}
+
+export interface AMQPOperationOptions {
   timeout?: number;
-  channel?: AMQPRCChannel;
+  channel?: AMQPChannel;
 }
 
-export interface AMQPRPCOperationChannelOptions
-extends Pick<AMQPRPCChannelOptions, 'check' | 'assert'> {
-  retries?: number;
-}
-
-export interface AMQPRPCOperationPushOptions extends AMQPRPCOperationBaseOptions {
+export interface AMQPOperationPushOptions extends AMQPOperationOptions {
   push?: amqp.Options.Publish;
   waitForDrain?: boolean;
 }
 
-export interface AMQPRPCOperationPullOptions extends AMQPRPCOperationBaseOptions {
+export interface AMQPOperationPullOptions extends AMQPOperationOptions {
   pull?: { correlationId?: string } & amqp.Options.Consume;
 }
-export interface AMQPRPCOperationRPCOptions
-  extends AMQPRPCOperationPushOptions, AMQPRPCOperationPullOptions {}
+export interface AMQPOperationRPCOptions
+  extends AMQPOperationPushOptions, AMQPOperationPullOptions {}
 
-export class AMQPRPCConnector extends ConnectionManager<AMQPConnection> implements RPCConnector {
+export class AMQPConnector
+extends ConnectionManager<AMQPDriverConnection>
+implements MessageQueueConnector {
   protected uuidName: string;
   protected uuidNamespace: string;
-  protected options: AMQPRPCConnectorFullOptions;
+  protected options: AMQPConnectorFullOptions;
 
-  constructor(options: AMQPRPCConnectorOptions) {
-    const opts: AMQPRPCConnectorFullOptions = {
+  constructor(options: AMQPConnectorOptions) {
+    const opts: AMQPConnectorFullOptions = {
       connect: () => amqp.connect(opts.uri),
       disconnect: con => con.close(),
       retries: 10,
       name: '',
+      exchange: '',
       uri: 'amqp://localhost',
       timeout: 5000,
       ...options,
@@ -71,99 +72,168 @@ export class AMQPRPCConnector extends ConnectionManager<AMQPConnection> implemen
     this.uuidNamespace = uuid4();
   }
 
-  protected get appId(): string {
-    return `${this.uuidName}:${this.uuidNamespace}`;
+  protected genId(name: string, type?: string | null, uuid?: string | null) {
+    const id = uuid || uuid5([name, type].filter(x => x).join(':'), this.uuidNamespace);
+    return [name, type, id].filter(x => x).join(':');
   }
 
-  protected messageId(type: string): string {
-    return uuid5(`${this.uuidName}:${type}`, this.uuidNamespace);
+  protected appId(): string {
+    return this.genId('app', this.uuidName, this.uuidNamespace);
+  }
+
+  protected messageId(type?: string | null, options?: AMQPOperationPushOptions): string {
+    if (options && options.push && options.push.messageId) {
+      return options.push.messageId;
+    }
+    return this.genId('message', type);
+  }
+
+  protected correlationId(type?: string | null, options?: AMQPOperationRPCOptions): string {
+    if (options) {
+      if (options.push && options.push.correlationId) {
+        return options.push.correlationId;
+      }
+      if (options.pull && options.pull.correlationId) {
+        return options.pull.correlationId;
+      }
+    }
+    return this.genId('correlation', type);
+  }
+
+  protected consumerTag(type?: string | null, options?: AMQPOperationPullOptions): string {
+    if (options && options.pull && options.pull.consumerTag) {
+      return options.pull.consumerTag;
+    }
+    return this.genId('consumer', type);
+  }
+
+  protected responseQueue(type?: string | null, options?: AMQPOperationRPCOptions): string {
+    if (options && options.push && options.push.replyTo) {
+      return options.push.replyTo;
+    }
+    return this.genId('response-queue', type);
   }
 
   async ping(): Promise<void> {
-    const messageId = this.messageId('ping');
-    const responseQueue = `${messageId}-queue`;
+    const type = 'ping';
+    const queue = this.responseQueue(type);
     const channel = await this.channel({
       assert: {
-        [responseQueue]: {
+        [queue]: {
           exclusive: true,
           durable: false,
           autoDelete: true,
         },
       },
     });
-
-    channel.sendToQueueAndWaitForDrain(  // to ensure message is sent
-      responseQueue,
-      new Buffer('ok', 'utf-8'),
-      { expiration: this.options.timeout },
-    );
-
-    const msg = await channel.get(responseQueue, { noAck: true });
-    await channel.deleteQueue(responseQueue);
-    await channel.disconnect();
-
-    const message = msg as amqp.Message;
-    if (!message) {
-      throw new Error('AMQP message not received on time');
-    } else if (message.content.toString('utf-8') !== 'ok') {
-      throw new Error('AMQP message corrupted');
+    const rpcOptions = {
+      channel,
+      timeout: this.options.timeout,
+      push: {
+        replyTo: queue,
+      },
+    };
+    try {
+      const message = await this.rpc(queue, type, new Buffer('ok'), rpcOptions);
+      if (!message) {
+        throw new Error('AMQP message not received on time');
+      } else if (message.content.toString('utf-8') !== 'ok') {
+        throw new Error('AMQP message corrupted');
+      }
+    } finally {
+      await channel.deleteQueue(queue);
+      await channel.disconnect();
     }
   }
 
-  async channel(options: AMQPRPCOperationChannelOptions = {}): Promise<AMQPRCChannel> {
-    // Custom channel class to allow reconnects
-    return new AMQPRCChannel({ manager: this, ...options });
+  /**
+   * Allow to create custom channels (along with queue assertions) to pass to
+   * other methods via optional 'channel' option.
+   *
+   * Always remember to disconnect (or close) the channel after use.
+   *
+   * @param options
+   */
+  async channel(options: AMQPOperationChannelOptions = {}): Promise<AMQPChannel> {
+    // Custom channel class to allow reconnects... in the future
+    return new AMQPChannel({ manager: this, ...options });
   }
 
-  async push(queue: string, type: string, data: Buffer, options: AMQPRPCOperationPushOptions = {}) {
-    const channel = options.channel || await this.channel();
-
-    const mid = this.messageId(type);
-    const pushOptions: AMQPRPCOperationPushOptions['push'] = {
+  /**
+   * Push message to given queue
+   *
+   * @param queue queue name
+   * @param type message type
+   * @param data message buffer
+   * @param options
+   */
+  async push(queue: string, type: string, data: Buffer, options: AMQPOperationPushOptions = {}) {
+    const appId = this.appId();
+    const messageId = this.messageId(type, options);
+    const channel = options.channel || await this.channel({
+      // ensure request queue is available
+      assert: {
+        [queue]: {
+          conflict: 'ignore',
+          durable: true,
+        },
+      },
+    });
+    const pushOptions = {
+      appId,
       type,
-      appId: this.appId,
-      messageId: mid,
-      correlationId: mid,
+      messageId,
       timestamp: Date.now(),
       ...options.push,
     };
-
+    const exchange = this.options.exchange;
     if (options.waitForDrain !== false) {  // because undefined means true here
-      await channel.sendToQueueAndWaitForDrain(queue, data, pushOptions);
+      await channel.publishAndWaitForDrain(exchange, queue, data, pushOptions);
     } else {
-      await channel.sendToQueue(queue, data, pushOptions);
+      await channel.publish(exchange, queue, data, pushOptions);
     }
-
     if (!options.channel) {
       await channel.disconnect();
     }
   }
 
+  /**
+   * Pulls (waiting) a request from given queue.
+   *
+   * @param queue queue name
+   * @param type message type
+   * @param options
+   */
   async pull(
     queue: string,
     type?: string | null,
-    options: AMQPRPCOperationPullOptions = {},
-  ): Promise<Buffer> {
+    options: AMQPOperationPullOptions = {},
+  ): Promise<amqp.Message> {
+    const appId = this.appId();
+    const consumerTag = this.consumerTag(type, options);
+    const correlationId = options && options.pull ? options.pull.correlationId : undefined;
     const channel = options.channel || await this.channel({
       // ensure request queue is available
-      check: [queue],
+      assert: {
+        [queue]: {
+          conflict: 'ignore',
+          durable: true,
+        },
+      },
     });
-
-    const pullOptions: AMQPRPCOperationPullOptions['pull'] = {
-      consumerTag: this.appId,
+    const pullOptions = {
+      appId,
+      consumerTag,
+      correlationId,
       ...options.pull,
     };
-
     let guard: NodeJS.Timer;
-    let cancelled = false;
+    let finished = false;
     try {
-      return await new Promise<Buffer>((resolve, reject) => {
+      return await new Promise<amqp.Message>((resolve, reject) => {
         if (options.timeout) {
           guard = setTimeout(
-            () => {
-              cancelled = true;
-              reject(new Error(`Timeout after ${options.timeout}ms`));
-            },
+            () => reject(new Error(`Timeout after ${options.timeout}ms`)),
             options.timeout,
           );
         }
@@ -171,51 +241,62 @@ export class AMQPRPCConnector extends ConnectionManager<AMQPConnection> implemen
           .consume(
             queue,
             async (message) => {
-              if (message && !cancelled) {
-                if (
-                  (pullOptions.correlationId
-                    && pullOptions.correlationId !== message.properties.correlationId)
-                  || (type && type !== message.properties.type)
-                ) {
-                  return channel.reject(message, true);  // backwards-compatible nack + requeue
+              if (!message) {
+                if (!finished) {
+                  reject(new Error('Cancelled by remote server'));
                 }
-
+              } else if (
+                finished // requeue messages between resolve/reject and cancel
+                || (correlationId && correlationId !== message.properties.correlationId)
+                || (type && type !== message.properties.type)
+              ) {
+                channel.reject(message, true); // backwards-compatible nack + requeue
+              } else {
                 if (options.timeout) clearTimeout(guard);
-
                 channel.ack(message);
-                resolve(message.content);
+                resolve(message);
               }
             },
             pullOptions,
           )
-          .then(reply => channel.cancel(reply.consumerTag));
+          .catch(reject);
       });
     } finally {
-      if (!options.channel) {
-        await channel.disconnect();
+      finished = true;
+      try {
+        await channel.cancel(consumerTag);
+      } finally {
+        if (!options.channel) {
+          await channel.disconnect();
+        }
       }
     }
   }
 
   /**
-   * Creates an RPC request and wait for response
-   * @param queue
-   * @param type
-   * @param data
+   * Push a message to queue and pulls its response from a dedicated queue.
+   *
+   * @param queue queue name
+   * @param type message type
+   * @param data message buffer
+   * @param options
    */
   async rpc(
     queue: string,
     type: string,
     data: Buffer,
-    options: AMQPRPCOperationRPCOptions = {},
-  ): Promise<Buffer> {
-    const mid = this.messageId(type);
-    const responseQueue = `${mid}-response-queue`;
+    options: AMQPOperationRPCOptions = {},
+  ): Promise<amqp.Message> {
+    const correlationId = this.correlationId(type, options);
+    const responseQueue = this.responseQueue(type, options);
     const channel = options.channel || await this.channel({
-      // ensure request queue is available
-      check: [queue],
-      // create exclusive response queue
       assert: {
+        // ensure request queue is available
+        [queue]: {
+          conflict: 'ignore',
+          durable: true,
+        },
+        // create exclusive response queue
         [responseQueue]: {
           exclusive: true,
           durable: true,
@@ -223,28 +304,25 @@ export class AMQPRPCConnector extends ConnectionManager<AMQPConnection> implemen
         },
       },
     });
-
+    const pushOptions = {
+      ...options,
+      push: {
+        correlationId,
+        replyTo: responseQueue,
+        ...options.push,
+      },
+    };
+    const pullOptions = {
+      ...options,
+      pull: {
+        correlationId,
+        exclusive: true,
+        ...options.pull,
+      },
+    };
     try {
       try {
-        const pushOptions = {
-          ...options,
-          push: {
-            messageId: mid,
-            correlationId: mid,
-            replyTo: responseQueue,
-            ...options.push,
-          },
-        };
         await this.push(queue, type, data, pushOptions);
-
-        const pullOptions = {
-          ...options,
-          pull: {
-            exclusive: true,
-            correlationId: mid,
-            ...options.pull,
-          },
-        };
         return await this.pull(responseQueue, null, pullOptions);
       } finally {
         await channel.deleteQueue(responseQueue);

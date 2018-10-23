@@ -12,7 +12,7 @@ export interface Connector {
   ping(): Promise<void>;
 }
 
-export interface RPCConnector extends Connector {
+export interface MessageQueueConnector extends Connector {
   rpc(queue: string, type: string, data: any, options?: AnyObject): Promise<any>;
   push(queue: string, type: string, data: any, options?: AnyObject): Promise<void>;
   pull(queue: string, type: string, options?: AnyObject): Promise<any>;

@@ -1,7 +1,8 @@
 import * as events from 'events';
 import * as amqp from 'amqplib';
 
-export interface AMQPChannel extends events.EventEmitter {
+export interface AMQPDriverChannel
+extends Pick<events.EventEmitter, 'once' | 'removeListener'> {
   // had to rewrite all these interface methods to get rid of bluebird
   close(): PromiseLike<void>;
 
@@ -19,8 +20,9 @@ export interface AMQPChannel extends events.EventEmitter {
     options?: amqp.Options.DeleteQueue,
   ): PromiseLike<amqp.Replies.DeleteQueue>;
 
-  sendToQueue(
-    queue: string,
+  publish(
+    exchange: string,
+    routingKey: string,
     content: Buffer,
     options?: amqp.Options.Publish,
   ): boolean;
@@ -33,15 +35,15 @@ export interface AMQPChannel extends events.EventEmitter {
 
   cancel(consumerTag: string): PromiseLike<amqp.Replies.Empty>;
 
-  get(queue: string, options?: amqp.Options.Get): PromiseLike<amqp.Message | false>;
-
   ack(message: amqp.Message, allUpTo?: boolean): void;
 
   reject(message: amqp.Message, requeue?: boolean): void;
 }
 
-export interface AMQPConnection {
+export interface AMQPDriverConnection<T extends AMQPDriverChannel = AMQPDriverChannel> {
   close(): PromiseLike<void>;
-  createChannel(): PromiseLike<AMQPChannel>;
-  createConfirmChannel(): PromiseLike<AMQPChannel>;
+  createChannel(): PromiseLike<T>;
+  createConfirmChannel(): PromiseLike<T>;
 }
+
+export type Omit<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>>;

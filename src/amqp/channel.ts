@@ -1,38 +1,52 @@
 import * as amqp from 'amqplib';
 
 import { ConnectionManager, waitFortEvent } from '../utils';
-import { AMQPConnection, AMQPChannel } from './types';
+import { AMQPDriverConnection, AMQPDriverChannel, Omit } from './types';
 
-export interface AMQPRPCChannelOptions {
-  manager: ConnectionManager<AMQPConnection>;
+export interface AMQPQueueAssertion extends amqp.Options.AssertQueue{
+  conflict?: 'ignore' | 'raise';
+}
+
+export interface AMQPChannelOptions {
+  manager: ConnectionManager<AMQPDriverConnection>;
   confirm?: boolean;
   retries?: number;
   check?: string[];
   assert?: {
-    [queue: string]: amqp.Options.AssertQueue;
+    [queue: string]: AMQPQueueAssertion;
   };
 }
 
-export interface AMQPRPCChannelFullOptions extends AMQPRPCChannelOptions {
+export interface AMQPChannelFullOptions extends AMQPChannelOptions {
   check: string[];
   assert: {
-    [queue: string]: amqp.Options.AssertQueue;
+    [queue: string]: AMQPQueueAssertion;
   };
 }
 
-export class AMQPRCChannel extends ConnectionManager<AMQPChannel>{
-  protected options: AMQPRPCChannelFullOptions;
+export class AMQPChannel
+extends ConnectionManager<AMQPDriverChannel>
+implements Omit<
+  AMQPDriverChannel,
+  'publish' | // overridden as async
+  'checkQueue' | 'assertQueue' | // managed by constructor options
+  'once' | 'removeListener' // not an EventEmitter atm
+> {
+  protected options: AMQPChannelFullOptions;
 
-  constructor(options: AMQPRPCChannelOptions) {
+  constructor(options: AMQPChannelOptions) {
     super({
-      connect: () => this.createInitializedChannel(),
+      connect: () => this.prepareChannel(),
       disconnect: con => con.close(),
       retries: options.retries,
     });
     this.options = { check: [], assert: {}, ...options };
   }
 
-  protected async createUninitializedChannel(): Promise<AMQPChannel> {
+  /**
+   * Create (uninitialized) channel
+   */
+  protected async createChannel(): Promise<AMQPDriverChannel> {
     const connection = await this.options.manager.connect();
     try {
       if (this.options.confirm !== false) {  // NOTE: undefined means true here
@@ -45,20 +59,32 @@ export class AMQPRCChannel extends ConnectionManager<AMQPChannel>{
     }
   }
 
-  protected async createInitializedChannel(): Promise<AMQPChannel> {
-    const channel = await this.createUninitializedChannel();
+  /**
+   * Create and initialize channel with queues from config
+   */
+  protected async prepareChannel(): Promise<AMQPDriverChannel> {
+    let channel = await this.createChannel();
     for (const name of this.options.check) {
       await channel.checkQueue(name);
     }
-    for (const name in this.options.assert) {
-      if (!this.options.assert.hasOwnProperty(name)) continue;
-      await channel.assertQueue(name, this.options.assert[name]);
+    for (const [name, options] of Object.entries(this.options.assert)) {
+      try {
+        await channel.assertQueue(name, options);
+      } catch (err) {
+        if (options.conflict === 'ignore') {
+          // assertQueue errors bork the channel, recreate
+          await this.disconnect();
+          channel = await this.createChannel();
+          continue;
+        }
+        throw err;
+      }
     }
     return channel;
   }
 
   async operation<T = void>(name: string, ...args: any[]): Promise<T> {
-    const channel = this.connect();
+    const channel = await this.connect();
     const func = (channel as any)[name] as Function;
     return await Promise.resolve<T>(func.apply(channel, args));
   }
@@ -70,25 +96,27 @@ export class AMQPRCChannel extends ConnectionManager<AMQPChannel>{
     return await this.disconnect();
   }
 
-  async sendToQueueAndWaitForDrain(
-    queue: string,
+  async publishAndWaitForDrain(
+    exchange: string,
+    routingKey: string,
     data: Buffer,
     options?: amqp.Options.Publish,
   ): Promise<true> {
     const channel = await this.connect();
     // amqplib is not the smartest lib out there
-    while (!await channel.sendToQueue(queue, data, options)) {
+    if (!await channel.publish(exchange, routingKey, data, options)) {
       await waitFortEvent(channel, 'drain');
     }
     return true;
   }
 
-  async sendToQueue(
-    queue: string,
+  async publish(
+    exchange: string,
+    routingKey: string,
     data: Buffer,
     options?: amqp.Options.Publish,
   ): Promise<boolean> {
-    return await this.operation<boolean>('sendToQueue', queue, data, options);
+    return await this.operation<boolean>('publish', exchange, routingKey, data, options);
   }
 
   async deleteQueue(
@@ -110,12 +138,10 @@ export class AMQPRCChannel extends ConnectionManager<AMQPChannel>{
     return await this.operation<amqp.Replies.Empty>('cancel', consumerTag);
   }
 
-  async get(queue: string, options?: amqp.Options.Get): Promise<amqp.Message | false> {
-    return await this.operation<amqp.Message | false>('queue', queue, options);
-  }
   async ack(message: amqp.Message, allUpTo?: boolean): Promise<void> {
     return await this.operation<void>('ack', message, allUpTo);
   }
+
   async reject(message: amqp.Message, requeue?: boolean): Promise<void> {
     return await this.operation<void>('reject', message, requeue);
   }

@@ -1,5 +1,3 @@
-import * as events from 'events';
-
 export interface ConnectionManagerOptions<T> {
   connect(): PromiseLike<T> | T;
   disconnect(connection: T): PromiseLike<void> | void;
@@ -49,7 +47,10 @@ export class ConnectionManager<T> {
 }
 
 export async function waitFortEvent<T = void>(
-  emitter: events.EventEmitter,
+  emitter: {
+    once(event: string, handler: Function): void
+    removeListener(event: string, handler: Function): void;
+  },
   event: string,
 ): Promise<T> {
   if (event === 'error') {

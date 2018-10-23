@@ -1,7 +1,7 @@
 {
-  "name": "node-typescript-boilerplate",
-  "version": "0.0.0",
-  "description": "Minimalistic boilerplate to quick-start Node.js development in TypeScript.",
+  "name": "simple-mq-node",
+  "version": "0.0.1",
+  "description": "",
   "author": "The Transparent Team",
   "license": "",
   "main": "build/src/main.js",
@@ -67,7 +67,9 @@
   "dependencies": {
     "@types/amqplib": "^0.5.8",
     "@types/uuid": "^3.4.4",
-    "amqplib": "^0.5.2",
     "uuid": "^3.3.2"
+  },
+  "peerDependencies": {
+    "amqplib": "^0.5.2"
   }
 }
