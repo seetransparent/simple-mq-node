@@ -3,12 +3,16 @@ import * as uuid5 from 'uuid/v5';
 import * as uuid4 from 'uuid/v4';
 
 import { MessageQueueConnector } from '../types';
-import { ConnectionManager, ConnectionManagerOptions } from '../utils';
+import { ConnectionManager, ConnectionManagerOptions } from '../base';
+import { TimeoutError, PullError } from '../errors';
+import { omit } from '../utils';
+
 import { AMQPChannel, AMQPChannelOptions } from './channel';
 import { AMQPDriverConnection, Omit } from './types';
 
-export interface AMQPConnectorOptions extends
-Omit<ConnectionManagerOptions<AMQPDriverConnection>, 'connect' | 'disconnect'> {
+export interface AMQPConnectorOptions
+  extends Omit<ConnectionManagerOptions<AMQPDriverConnection>, 'connect' | 'disconnect'>
+{
   name: string;
   uri?: string;
   exchange?: string;
@@ -17,16 +21,18 @@ Omit<ConnectionManagerOptions<AMQPDriverConnection>, 'connect' | 'disconnect'> {
   timeout?: number;
 }
 
-interface AMQPConnectorFullOptions extends
-ConnectionManagerOptions<AMQPDriverConnection>,
-Omit<AMQPConnectorOptions, 'connect' | 'disconnect'> {
+interface AMQPConnectorFullOptions
+  extends
+    ConnectionManagerOptions<AMQPDriverConnection>,
+    Omit<AMQPConnectorOptions, 'connect' | 'disconnect'>
+{
   exchange: string;
   uri: string;
   timeout: number;
 }
 
 export interface AMQPOperationChannelOptions
-extends Omit<AMQPChannelOptions, 'manager'> {}
+  extends Omit<AMQPChannelOptions, 'manager'> {}
 
 export interface AMQPOperationOptions {
   timeout?: number;
@@ -34,19 +40,19 @@ export interface AMQPOperationOptions {
 }
 
 export interface AMQPOperationPushOptions extends AMQPOperationOptions {
-  push?: amqp.Options.Publish;
-  waitForDrain?: boolean;
+  push?: { waitDelivery?: boolean } & amqp.Options.Publish;
 }
 
 export interface AMQPOperationPullOptions extends AMQPOperationOptions {
-  pull?: { correlationId?: string } & amqp.Options.Consume;
+  pull?: { correlationId?: string, ack?: boolean } & amqp.Options.Consume;
 }
 export interface AMQPOperationRPCOptions
   extends AMQPOperationPushOptions, AMQPOperationPullOptions {}
 
 export class AMQPConnector
-extends ConnectionManager<AMQPDriverConnection>
-implements MessageQueueConnector {
+  extends ConnectionManager<AMQPDriverConnection>
+  implements MessageQueueConnector<Buffer, amqp.Message>
+{
   protected uuidName: string;
   protected uuidNamespace: string;
   protected options: AMQPConnectorFullOptions;
@@ -184,11 +190,12 @@ implements MessageQueueConnector {
       type,
       messageId,
       timestamp: Date.now(),
-      ...options.push,
+      ...omit(options.push, ['waitDelivery']),
     };
+
     const exchange = this.options.exchange;
-    if (options.waitForDrain !== false) {  // because undefined means true here
-      await channel.publishAndWaitForDrain(exchange, queue, data, pushOptions);
+    if (!options.push || options.push.waitDelivery !== false) { // default to true
+      await channel.publishAndWaitDelivery(exchange, queue, data, pushOptions);
     } else {
       await channel.publish(exchange, queue, data, pushOptions);
     }
@@ -224,8 +231,7 @@ implements MessageQueueConnector {
     const pullOptions = {
       appId,
       consumerTag,
-      correlationId,
-      ...options.pull,
+      ...omit(options.pull, ['correlationId', 'ack']),
     };
     let guard: NodeJS.Timer;
     let finished = false;
@@ -233,7 +239,7 @@ implements MessageQueueConnector {
       return await new Promise<amqp.Message>((resolve, reject) => {
         if (options.timeout) {
           guard = setTimeout(
-            () => reject(new Error(`Timeout after ${options.timeout}ms`)),
+            () => reject(new TimeoutError(`Timeout after ${options.timeout}ms`)),
             options.timeout,
           );
         }
@@ -243,7 +249,7 @@ implements MessageQueueConnector {
             async (message) => {
               if (!message) {
                 if (!finished) {
-                  reject(new Error('Cancelled by remote server'));
+                  reject(new PullError('Cancelled by remote server'));
                 }
               } else if (
                 finished // requeue messages between resolve/reject and cancel
@@ -252,8 +258,12 @@ implements MessageQueueConnector {
               ) {
                 channel.reject(message, true); // backwards-compatible nack + requeue
               } else {
-                if (options.timeout) clearTimeout(guard);
-                channel.ack(message);
+                if (options.timeout) {
+                  clearTimeout(guard);
+                }
+                if (!options.pull || options.pull.ack !== false) { // default to true
+                  channel.ack(message);
+                }
                 resolve(message);
               }
             },

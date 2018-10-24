@@ -2,7 +2,8 @@ import * as events from 'events';
 import * as amqp from 'amqplib';
 
 export interface AMQPDriverChannel
-extends Pick<events.EventEmitter, 'once' | 'removeListener'> {
+  extends Pick<events.EventEmitter, 'once' | 'removeListener'>
+{
   // had to rewrite all these interface methods to get rid of bluebird
   close(): PromiseLike<void>;
 
@@ -25,11 +26,12 @@ extends Pick<events.EventEmitter, 'once' | 'removeListener'> {
     routingKey: string,
     content: Buffer,
     options?: amqp.Options.Publish,
+    callback?: (err: any, ok: amqp.Replies.Empty) => void,  // only on confirm
   ): boolean;
 
   consume(
     queue: string,
-    onMessage: (msg: amqp.Message | null) => any,
+    onMessage: (msg: amqp.ConsumeMessage | null) => any,
     options?: amqp.Options.Consume,
   ): PromiseLike<amqp.Replies.Consume>;
 

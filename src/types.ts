@@ -12,8 +12,8 @@ export interface Connector {
   ping(): Promise<void>;
 }
 
-export interface MessageQueueConnector extends Connector {
-  rpc(queue: string, type: string, data: any, options?: AnyObject): Promise<any>;
-  push(queue: string, type: string, data: any, options?: AnyObject): Promise<void>;
-  pull(queue: string, type: string, options?: AnyObject): Promise<any>;
+export interface MessageQueueConnector<T = any, V = any> extends Connector {
+  rpc(queue: string, type: string, data: T, options?: AnyObject): Promise<V>;
+  push(queue: string, type: string, data: T, options?: AnyObject): Promise<void>;
+  pull(queue: string, type: string, options?: AnyObject): Promise<V>;
 }

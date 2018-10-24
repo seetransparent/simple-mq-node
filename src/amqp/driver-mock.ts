@@ -6,58 +6,72 @@ import * as amqp from 'amqplib';
 import { AMQPDriverConnection, AMQPDriverChannel } from './types';
 
 interface AMQPMockConsumer {
-  received: Set<string>;
+  received: Set<number>;
   consumerTag: string;
-  handler: (msg: amqp.Message | null) => any;
-}
-
-interface AMQPMockMessage {
-  id: string;
-  message: amqp.Message;
+  handler: (msg: amqp.ConsumeMessage | null) => any;
 }
 
 export class AMQPMockQueue {
   constructor(
     public options: amqp.Options.AssertQueue,
-    public messages: AMQPMockMessage[] = [],
+    public messages: amqp.Message[] = [],
     public consumers: AMQPMockConsumer[] = [],
+    public pendings: Set<number> = new Set(),
   ) { }
 
   process() {
     for (let message, i = 0; message = this.messages[i]; i += 1) {
+      const deliveryTag = message.fields.deliveryTag;
+
       for (let consumer, j = 0; consumer = this.consumers[j]; j += 1) {
-        if (!consumer.received.has(message.id)) {
+        if (!consumer.received.has(deliveryTag)) {
           i -= this.messages.splice(i, 1).length;
-          consumer.received.add(message.id);
-          consumer.handler(message.message);
+
+          // TODO (if Channel.get gets implemented): update messageCount
+          message.fields.consumerTag = consumer.consumerTag;
+
+          this.pendings.add(deliveryTag);
+          consumer.received.add(deliveryTag);
+          consumer.handler(message);
           break;
         }
       }
     }
   }
 
-  addMessage(message: amqp.Message) {
-    const id = uuid4();
-    this.messages.push({ id, message });
+  addMessage(message: amqp.Message): amqp.Message {
+    this.messages.push(message);
     process.nextTick(() => this.process());
+    return message;
   }
 
-  addConsumer(id: string | undefined | null, handler: AMQPMockConsumer['handler']) {
-    const consumerTag = id || uuid4();
-    this.consumers.push({ consumerTag, handler, received: new Set() });
-    process.nextTick(() => this.process());
-    return { consumerTag };
+  ackMessage(message: amqp.Message, allUpTo?: boolean): amqp.Message {
+    if (allUpTo) this.pendings.clear();
+    else this.pendings.delete(message.fields.deliveryTag);
+    return message;
   }
 
-  removeConsumer(consumerTag: string) {
+  addConsumer(
+    handler: AMQPMockConsumer['handler'],
+    options: amqp.Options.Consume,
+  ): AMQPMockConsumer {
+    const consumerTag = options.consumerTag || uuid4();
+    const consumer = { consumerTag, handler, received: new Set<number>() };
+    this.consumers.push(consumer);
+    process.nextTick(() => this.process());
+    return consumer;
+  }
+
+  popConsumer(consumerTag: string): AMQPMockConsumer {
     const alive = this.consumers.filter(consumer => consumer.consumerTag !== consumerTag);
-    this.consumers.splice(0, this.consumers.length, ...alive);
+    return this.consumers.splice(0, this.consumers.length, ...alive)[0];
   }
 }
 
 export class AMQPMockConnection implements AMQPDriverConnection {
   public queues: { [name: string]: AMQPMockQueue } = {};
   public channels: AMQPMockChannel[] = [];
+  public messageCounter: number = 0;
 
   async close(): Promise<void> {}
 
@@ -71,6 +85,54 @@ export class AMQPMockConnection implements AMQPDriverConnection {
     const channel = new AMQPMockChannel({ connection: this, confirm: true });
     this.channels.push(channel);
     return channel;
+  }
+
+  getQueue(
+    exchange: string,
+    routingKey: string,
+    options: amqp.Options.AssertQueue = {},
+  ): AMQPMockQueue {
+    const name = [exchange, routingKey].filter(x => x).join(':');
+    const existing = this.queues[name];
+    if (existing) return existing;
+    return this.queues[name] = new AMQPMockQueue(options);
+  }
+
+  addMessage(
+    exchange: string,
+    routingKey: string,
+    content: Buffer,
+    options?: amqp.Options.Publish,
+  ): amqp.Message {
+    const deliveryTag = this.messageCounter;
+    const queue = this.getQueue(exchange, routingKey);
+    this.messageCounter += 1;
+    return queue.addMessage({
+      content,
+      fields: {
+        exchange,
+        routingKey,
+        deliveryTag,
+        redelivered: false,
+      } as any as amqp.Message['fields'],  // required as definition is wrong
+      properties: {
+        messageId: undefined,
+        type: undefined,
+        userId: undefined,
+        appId: undefined,
+        clusterId: null,
+        timestamp: new Date(),
+        correlationId: undefined,
+        replyTo: undefined,
+        expiration: undefined,
+        contentType: undefined,
+        contentEncoding: undefined,
+        deliveryMode: undefined,
+        priority: undefined,
+        headers: {},
+        ...options,
+      },
+    });
   }
 }
 
@@ -90,18 +152,6 @@ export class AMQPMockChannel extends events.EventEmitter implements AMQPDriverCh
     this.confirm = confirm;
   }
 
-  protected getQueue(
-    exchange: string,
-    routingKey: string,
-    options: amqp.Options.AssertQueue = {},
-  ) {
-    const name = [exchange, routingKey].filter(x => x).join(':');
-    const existing = this.connection.queues[name];
-    if (existing) return existing;
-    const created = this.connection.queues[name] = new AMQPMockQueue(options);
-    return created;
-  }
-
   async close(): Promise<void> {
     const index = this.connection.channels.indexOf(this);
     this.connection.channels.splice(index, 1);
@@ -111,7 +161,7 @@ export class AMQPMockChannel extends events.EventEmitter implements AMQPDriverCh
     queue: string,
     options: amqp.Options.AssertQueue = {},
   ): Promise<amqp.Replies.AssertQueue> {
-    const q = this.getQueue('', queue, options);
+    const q = this.connection.getQueue('', queue, options);
     return {
       queue,
       messageCount: q.messages.length,
@@ -125,51 +175,37 @@ export class AMQPMockChannel extends events.EventEmitter implements AMQPDriverCh
   }
 
   async deleteQueue(
-    queue: string,
+    name: string,
     options: amqp.Options.DeleteQueue = {},
   ): Promise<amqp.Replies.DeleteQueue> {
-    const q = this.connection.queues[queue] || { messages: [] };
-    const messageCount = q.messages.length;
+    const queue = this.connection.queues[name];
+    if (!queue) return { messageCount: 0 };
+    const messageCount = queue.messages.length;
     if (options.ifEmpty && messageCount) return { messageCount };
-    delete this.connection.queues[queue];
+    delete this.connection.queues[name];
     return { messageCount };
   }
 
-  pushToQueue(
+  protected getQueue(
+    exchange: string,
+    routingKey: string,
+    options: amqp.Options.AssertQueue = {},
+  ): AMQPMockQueue {
+    return this.connection.getQueue(exchange, routingKey, options);
+  }
+
+  protected addMessage(
     exchange: string,
     routingKey: string,
     content: Buffer,
     options?: amqp.Options.Publish,
+    callback?: (err: any, ok: amqp.Replies.Empty) => void,
   ) {
-    const message = {
-      content,
-      fields: {
-        deliveryTag: '',
-        redelivered: false,
-        exchange: '',
-        routingKey: '',
-        messageCount: 1,
-      } as any as amqp.Message['fields'],  // required as definition is wrong
-      properties: {
-        messageId: undefined,
-        type: undefined,
-        userId: undefined,
-        appId: undefined,
-        clusterId: null,
-        timestamp: new Date(),
-        correlationId: undefined,
-        replyTo: undefined,
-        expiration: undefined,
-        contentType: undefined,
-        contentEncoding: undefined,
-        deliveryMode: undefined,
-        priority: undefined,
-        headers: {},
-        ...options,
-      },
-    };
-    this.getQueue(exchange, routingKey).addMessage(message);
+    this.connection.addMessage(exchange, routingKey, content, options);
     this.emit('drain');
+    if (callback) {
+      setTimeout(() => callback(undefined, {}), Math.random() < 0.25 ? 500 : 0);
+    }
   }
 
   publish(
@@ -177,13 +213,14 @@ export class AMQPMockChannel extends events.EventEmitter implements AMQPDriverCh
     routingKey: string,
     content: Buffer,
     options?: amqp.Options.Publish,
+    callback?: (err: any, ok: amqp.Replies.Empty) => void,
   ): boolean {
-    if (Math.random() < 0.5) {
-      setTimeout(() => this.pushToQueue(exchange, routingKey, content, options), 1000);
-      return false;
+    if (Math.random() > 0.5) {
+      this.addMessage(exchange, routingKey, content, options, callback);
+      return true;
     }
-    this.pushToQueue(exchange, routingKey, content, options);
-    return true;
+    setTimeout(() => this.addMessage(exchange, routingKey, content, options, callback), 500);
+    return false;
   }
 
   async consume(
@@ -191,19 +228,22 @@ export class AMQPMockChannel extends events.EventEmitter implements AMQPDriverCh
     onMessage: AMQPMockConsumer['handler'],
     options: amqp.Options.Consume = {},
   ): Promise<amqp.Replies.Consume> {
-    const consumerTag = options.consumerTag || uuid4();
-    return this.getQueue('', queue).addConsumer(consumerTag, onMessage);
+    const consumer = this.getQueue('', queue).addConsumer(onMessage, options);
+    return { consumerTag: consumer.consumerTag };
   }
 
   async cancel(consumerTag: string): Promise<amqp.Replies.Empty> {
-    Object.values(this.connection.queues).forEach(q => q.removeConsumer(consumerTag));
+    Object.values(this.connection.queues).forEach(q => q.popConsumer(consumerTag));
     return {};
   }
 
-  ack(message: amqp.Message, allUpTo?: boolean): void {}
+  ack(message: amqp.Message, allUpTo?: boolean): void {
+    this.getQueue(message.fields.exchange, message.fields.routingKey).ackMessage(message, allUpTo);
+  }
 
   reject(message: amqp.Message, requeue?: boolean): void {
     if (requeue) {
+      message.fields.redelivered = true;
       this.getQueue(message.fields.exchange, message.fields.routingKey).addMessage(message);
     }
   }
