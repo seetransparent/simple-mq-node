@@ -2,6 +2,7 @@ export interface ConnectionManagerOptions<T> {
   connect(): PromiseLike<T> | T;
   disconnect(connection: T): PromiseLike<void> | void;
   retries?: number;
+  delay?: number;
 }
 
 export class ConnectionManager<T> {
@@ -12,11 +13,12 @@ export class ConnectionManager<T> {
   ) { }
 
   protected async connectionAttempt() {
-    let lastError;
+    let lastError = new Error('No connection attempt has been made');
     for (
       let
         retry = -1,
-        retries = Math.max(this.connectionOptions.retries || 0, 0);
+        retries = Math.max(this.connectionOptions.retries || 0, -1),
+        delay = this.connectionOptions.delay || NaN;
       retry < retries;
       retry += 1
     ) {
@@ -25,7 +27,7 @@ export class ConnectionManager<T> {
       } catch (e) {
         lastError = e;
       }
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, Number.isFinite(delay) ? delay : 1000));
     }
     throw lastError;
   }
@@ -34,7 +36,13 @@ export class ConnectionManager<T> {
     if (!this.connectionPromise) {
       this.connectionPromise = this.connectionAttempt();
     }
-    return await this.connectionPromise;
+    try {
+      return await this.connectionPromise;
+    } catch (e) {
+      // on error promise is no longer valid
+      delete this.connectionPromise;
+      throw e;
+    }
   }
 
   async disconnect(): Promise<void> {

@@ -10,21 +10,21 @@ import { omit } from '../utils';
 import { AMQPChannel, AMQPChannelOptions } from './channel';
 import { AMQPDriverConnection, Omit } from './types';
 
-export interface AMQPConnectorOptions
-  extends Omit<ConnectionManagerOptions<AMQPDriverConnection>, 'connect' | 'disconnect'>
-{
+export interface AMQPConnectorOptions {
   name: string;
   uri?: string;
   exchange?: string;
   connect?: ConnectionManagerOptions<AMQPDriverConnection>['connect'];
   disconnect?: ConnectionManagerOptions<AMQPDriverConnection>['disconnect'];
   timeout?: number;
+  connectionRetries?: number;
+  connectionDelay?: number;
 }
 
 interface AMQPConnectorFullOptions
   extends
-    ConnectionManagerOptions<AMQPDriverConnection>,
-    Omit<AMQPConnectorOptions, 'connect' | 'disconnect'>
+    Omit<AMQPConnectorOptions, 'connect' | 'disconnect'>,
+    Pick<ConnectionManagerOptions<AMQPDriverConnection>, 'connect' | 'disconnect'>
 {
   exchange: string;
   uri: string;
@@ -44,7 +44,7 @@ export interface AMQPOperationPushOptions extends AMQPOperationOptions {
 }
 
 export interface AMQPOperationPullOptions extends AMQPOperationOptions {
-  pull?: { correlationId?: string, ack?: boolean } & amqp.Options.Consume;
+  pull?: { correlationId?: string, autoAck?: boolean } & amqp.Options.Consume;
 }
 export interface AMQPOperationRPCOptions
   extends AMQPOperationPushOptions, AMQPOperationPullOptions {}
@@ -61,20 +61,21 @@ export class AMQPConnector
     const opts: AMQPConnectorFullOptions = {
       connect: () => amqp.connect(opts.uri),
       disconnect: con => con.close(),
-      retries: 10,
       name: '',
       exchange: '',
       uri: 'amqp://localhost',
       timeout: 5000,
+      connectionRetries: 10,
+      connectionDelay: 1000,
       ...options,
     };
     super({
       connect: opts.connect,
       disconnect: opts.disconnect,
-      retries: opts.retries,
+      retries: 0, // retries are perform by channel
     });
     this.options = opts;
-    this.uuidName = this.options.name;
+    this.uuidName = this.options.name || this.constructor.name;
     this.uuidNamespace = uuid4();
   }
 
@@ -120,6 +121,17 @@ export class AMQPConnector
     return this.genId('response-queue', type);
   }
 
+  protected checkMessage(
+    message: amqp.Message,
+    options: Pick<amqp.MessageProperties, 'correlationId' | 'type'>,
+  ): boolean {
+    const { correlationId, type } = options;
+    return (
+      (!correlationId || correlationId === message.properties.correlationId)
+      && (!type || type === message.properties.type)
+    );
+  }
+
   async ping(): Promise<void> {
     const type = 'ping';
     const queue = this.responseQueue(type);
@@ -162,7 +174,12 @@ export class AMQPConnector
    */
   async channel(options: AMQPOperationChannelOptions = {}): Promise<AMQPChannel> {
     // Custom channel class to allow reconnects... in the future
-    return new AMQPChannel({ manager: this, ...options });
+    return new AMQPChannel({
+      manager: this,
+      connectionRetries: this.options.connectionRetries,
+      connectionDelay: this.options.connectionDelay,
+      ...options,
+    });
   }
 
   /**
@@ -185,7 +202,7 @@ export class AMQPConnector
         },
       },
     });
-    const pushOptions = {
+    const publishOptions = {
       appId,
       type,
       messageId,
@@ -195,9 +212,9 @@ export class AMQPConnector
 
     const exchange = this.options.exchange;
     if (!options.push || options.push.waitDelivery !== false) { // default to true
-      await channel.publishAndWaitDelivery(exchange, queue, data, pushOptions);
+      await channel.publishAndWaitDelivery(exchange, queue, data, publishOptions);
     } else {
-      await channel.publish(exchange, queue, data, pushOptions);
+      await channel.publish(exchange, queue, data, publishOptions);
     }
     if (!options.channel) {
       await channel.disconnect();
@@ -218,7 +235,8 @@ export class AMQPConnector
   ): Promise<amqp.Message> {
     const appId = this.appId();
     const consumerTag = this.consumerTag(type, options);
-    const correlationId = options && options.pull ? options.pull.correlationId : undefined;
+    const autoAck = !options.pull || options.pull.autoAck !== false; // default to true
+    const cancelAt = options.timeout ? Date.now() + options.timeout : Infinity;
     const channel = options.channel || await this.channel({
       // ensure request queue is available
       assert: {
@@ -228,53 +246,84 @@ export class AMQPConnector
         },
       },
     });
-    const pullOptions = {
+    const checkOptions = {
+      type,
+      correlationId: options && options.pull ? options.pull.correlationId : undefined,
+    };
+    const getOptions = {
+      noAck: options.pull ? options.pull.noAck : false,
+    };
+    const consumeOptions = {
       appId,
       consumerTag,
-      ...omit(options.pull, ['correlationId', 'ack']),
+      ...omit(options.pull, ['correlationId', 'autoAck']),
     };
-    let guard: NodeJS.Timer;
-    let finished = false;
+
+    const promises: Promise<any>[] = [];
     try {
+      // try using get (faster and safer, avoiding consumer management)
+      for (
+        let message: amqp.GetMessage | false;
+        message = await channel.get(queue, getOptions);
+      ) {
+        if (this.checkMessage(message, checkOptions)) {
+          if (autoAck) promises.push(channel.ack(message));
+          return message;
+        }
+
+        promises.push(channel.reject(message, true)); // requeue
+
+        if (Date.now() > cancelAt) {
+          throw new TimeoutError(`Timeout after ${options.timeout}ms`);
+        }
+      }
+
+      // at last resort, subscribe to queue and return single message
       return await new Promise<amqp.Message>((resolve, reject) => {
-        if (options.timeout) {
+        let finished = false;
+        function callback(err?: Error | null, message?: amqp.Message) {
+          // keep this synchronous to prevent race conditions
+          if (!finished) {
+            finished = true;
+            if (guard) clearTimeout(guard);
+            channel
+              .cancel(consumerTag)
+              .then(
+                () => err ? reject(err) : resolve(message),
+                (err2: Error) => reject(err || err2),
+              );
+          }
+        }
+
+        let guard: NodeJS.Timer;
+        if (Number.isFinite(cancelAt)) {
           guard = setTimeout(
-            () => reject(new TimeoutError(`Timeout after ${options.timeout}ms`)),
-            options.timeout,
+            () => callback(new TimeoutError(`Timeout after ${options.timeout}ms`)),
+            cancelAt - Date.now(),
           );
         }
+
+        // subscribe
         channel
           .consume(
             queue,
-            async (message) => {
+            (message) => {
               if (!message) {
-                if (!finished) {
-                  reject(new PullError('Cancelled by remote server'));
-                }
-              } else if (
-                finished // requeue messages between resolve/reject and cancel
-                || (correlationId && correlationId !== message.properties.correlationId)
-                || (type && type !== message.properties.type)
-              ) {
-                channel.reject(message, true); // backwards-compatible nack + requeue
+                callback(new PullError('Cancelled by remote server'));
+              } else if (finished || !this.checkMessage(message, checkOptions)) {
+                promises.push(channel.reject(message, true)); // requeue
               } else {
-                if (options.timeout) {
-                  clearTimeout(guard);
-                }
-                if (!options.pull || options.pull.ack !== false) { // default to true
-                  channel.ack(message);
-                }
-                resolve(message);
+                if (autoAck) promises.push(channel.ack(message));
+                callback(null, message);
               }
             },
-            pullOptions,
+            consumeOptions,
           )
-          .catch(reject);
+          .catch(callback);
       });
     } finally {
-      finished = true;
       try {
-        await channel.cancel(consumerTag);
+        await Promise.all(promises); // wait for pending promises
       } finally {
         if (!options.channel) {
           await channel.disconnect();

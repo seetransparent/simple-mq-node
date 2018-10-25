@@ -4,18 +4,19 @@ import { ConnectionManager } from '../base';
 import { waitForEvent } from '../utils';
 import { AMQPDriverConnection, AMQPDriverChannel, Omit } from './types';
 
-export interface AMQPQueueAssertion extends amqp.Options.AssertQueue{
+export interface AMQPQueueAssertion extends amqp.Options.AssertQueue {
   conflict?: 'ignore' | 'raise';
 }
 
 export interface AMQPChannelOptions {
   manager: ConnectionManager<AMQPDriverConnection>;
   confirm?: boolean;
-  retries?: number;
   check?: string[];
   assert?: {
     [queue: string]: AMQPQueueAssertion;
   };
+  connectionRetries?: number;
+  connectionDelay?: number;
 }
 
 export interface AMQPChannelFullOptions extends AMQPChannelOptions {
@@ -40,7 +41,8 @@ export class AMQPChannel
     super({
       connect: () => this.prepareChannel(),
       disconnect: con => con.close(),
-      retries: options.retries,
+      retries: options.connectionRetries,
+      delay: options.connectionDelay,
     });
     this.options = { check: [], assert: {}, ...options };
   }
@@ -110,7 +112,13 @@ export class AMQPChannel
     content: Buffer,
     options?: amqp.Options.Publish,
   ): Promise<void> {
-    const channel = await this.connect();
+    let channel: any;
+    try {
+      channel = await this.connect();
+    } catch (e) {
+      console.log(`TE ODIO ${e} ${'\n'.repeat(20)}`);
+      throw e;
+    }
     try {
       if (this.confirming) {
         await new Promise(
@@ -150,6 +158,13 @@ export class AMQPChannel
     options?: amqp.Options.Consume,
   ): Promise<amqp.Replies.Consume> {
     return await this.operation<amqp.Replies.Consume>('consume', queue, onMessage, options);
+  }
+
+  async get(
+    queue: string,
+    options?: amqp.Options.Get,
+  ): Promise<amqp.GetMessage | false> {
+    return await this.operation<amqp.GetMessage | false>('get', queue, options);
   }
 
   async cancel(consumerTag: string): Promise<amqp.Replies.Empty> {

@@ -9,6 +9,7 @@ interface AMQPMockConsumer {
   received: Set<number>;
   consumerTag: string;
   handler: (msg: amqp.ConsumeMessage | null) => any;
+  options: amqp.Options.Consume;
 }
 
 export class AMQPMockQueue {
@@ -22,21 +23,35 @@ export class AMQPMockQueue {
   process() {
     for (let message, i = 0; message = this.messages[i]; i += 1) {
       const deliveryTag = message.fields.deliveryTag;
-
       for (let consumer, j = 0; consumer = this.consumers[j]; j += 1) {
         if (!consumer.received.has(deliveryTag)) {
-          i -= this.messages.splice(i, 1).length;
-
-          // TODO (if Channel.get gets implemented): update messageCount
-          message.fields.consumerTag = consumer.consumerTag;
-
-          this.pendings.add(deliveryTag);
+          const message = this.pickMessage(i, consumer.consumerTag, consumer.options);
           consumer.received.add(deliveryTag);
           consumer.handler(message);
+          i -= 1;
           break;
         }
       }
     }
+  }
+
+  pickMessage(
+    index: number = 0,
+    consumerTag?: string | null,
+    options?: amqp.Options.Consume,
+  ): amqp.Message | null {
+    const [message] = this.messages.splice(index, 1);
+
+    if (!message) return null;
+
+    // update message as ConsumeMessage or GetMessage appropriately
+    if (consumerTag) message.fields.consumerTag = consumerTag;
+    else message.fields.messageCount = this.messages.length;
+
+    // add to need-to-ack list
+    if (!options || !options.noAck) this.pendings.add(message.fields.deliveryTag);
+
+    return message;
   }
 
   addMessage(message: amqp.Message): amqp.Message {
@@ -56,7 +71,12 @@ export class AMQPMockQueue {
     options: amqp.Options.Consume,
   ): AMQPMockConsumer {
     const consumerTag = options.consumerTag || uuid4();
-    const consumer = { consumerTag, handler, received: new Set<number>() };
+    const consumer = {
+      consumerTag,
+      handler,
+      options,
+      received: new Set<number>(),
+    };
     this.consumers.push(consumer);
     process.nextTick(() => this.process());
     return consumer;
@@ -68,20 +88,34 @@ export class AMQPMockQueue {
   }
 }
 
-export class AMQPMockConnection implements AMQPDriverConnection {
+export class AMQPMockBase extends events.EventEmitter {
+  public messageCounter: number = 0;
+  public failing: { [name: string]: Error } = {};
+}
+
+export class AMQPMockConnection
+extends AMQPMockBase
+implements AMQPDriverConnection {
   public queues: { [name: string]: AMQPMockQueue } = {};
   public channels: AMQPMockChannel[] = [];
-  public messageCounter: number = 0;
 
-  async close(): Promise<void> {}
+  wannaFail(method: string) {
+    if (this.failing[method]) throw this.failing[method];
+  }
+
+  async close(): Promise<void> {
+    this.wannaFail('close');
+  }
 
   async createChannel(): Promise<AMQPMockChannel> {
+    this.wannaFail('createChannel');
     const channel = new AMQPMockChannel({ connection: this });
     this.channels.push(channel);
     return channel;
   }
 
   async createConfirmChannel(): Promise<AMQPMockChannel> {
+    this.wannaFail('createConfirmChannel');
     const channel = new AMQPMockChannel({ connection: this, confirm: true });
     this.channels.push(channel);
     return channel;
@@ -136,7 +170,9 @@ export class AMQPMockConnection implements AMQPDriverConnection {
   }
 }
 
-export class AMQPMockChannel extends events.EventEmitter implements AMQPDriverChannel {
+export class AMQPMockChannel
+extends AMQPMockBase
+implements AMQPDriverChannel {
   public confirm: boolean;
   public connection: AMQPMockConnection;
 
@@ -152,7 +188,13 @@ export class AMQPMockChannel extends events.EventEmitter implements AMQPDriverCh
     this.confirm = confirm;
   }
 
+  wannaFail(method: string) {
+    if (this.failing[method]) throw this.failing[method];
+    this.connection.wannaFail(`channel.${method}`);
+  }
+
   async close(): Promise<void> {
+    this.wannaFail('close');
     const index = this.connection.channels.indexOf(this);
     this.connection.channels.splice(index, 1);
   }
@@ -161,6 +203,7 @@ export class AMQPMockChannel extends events.EventEmitter implements AMQPDriverCh
     queue: string,
     options: amqp.Options.AssertQueue = {},
   ): Promise<amqp.Replies.AssertQueue> {
+    this.wannaFail('assertQueue');
     const q = this.connection.getQueue('', queue, options);
     return {
       queue,
@@ -170,6 +213,7 @@ export class AMQPMockChannel extends events.EventEmitter implements AMQPDriverCh
   }
 
   async checkQueue(name: string): Promise<amqp.Replies.AssertQueue> {
+    this.wannaFail('checkQueue');
     if (!this.connection.queues[name]) throw new Error('queue not found'); // TODO
     return this.assertQueue(name);
   }
@@ -178,6 +222,7 @@ export class AMQPMockChannel extends events.EventEmitter implements AMQPDriverCh
     name: string,
     options: amqp.Options.DeleteQueue = {},
   ): Promise<amqp.Replies.DeleteQueue> {
+    this.wannaFail('deleteQueue');
     const queue = this.connection.queues[name];
     if (!queue) return { messageCount: 0 };
     const messageCount = queue.messages.length;
@@ -201,6 +246,7 @@ export class AMQPMockChannel extends events.EventEmitter implements AMQPDriverCh
     options?: amqp.Options.Publish,
     callback?: (err: any, ok: amqp.Replies.Empty) => void,
   ) {
+    this.messageCounter += 1;
     this.connection.addMessage(exchange, routingKey, content, options);
     this.emit('drain');
     if (callback) {
@@ -215,6 +261,7 @@ export class AMQPMockChannel extends events.EventEmitter implements AMQPDriverCh
     options?: amqp.Options.Publish,
     callback?: (err: any, ok: amqp.Replies.Empty) => void,
   ): boolean {
+    this.wannaFail('publish');
     if (Math.random() > 0.5) {
       this.addMessage(exchange, routingKey, content, options, callback);
       return true;
@@ -223,21 +270,32 @@ export class AMQPMockChannel extends events.EventEmitter implements AMQPDriverCh
     return false;
   }
 
+  async get(
+    queue: string,
+    options?: amqp.Options.Get,
+  ): Promise<amqp.GetMessage | false> {
+    this.wannaFail('get');
+    return this.getQueue('', queue).pickMessage(0, null, options) as amqp.GetMessage || false;
+  }
+
   async consume(
     queue: string,
     onMessage: AMQPMockConsumer['handler'],
     options: amqp.Options.Consume = {},
   ): Promise<amqp.Replies.Consume> {
+    this.wannaFail('consume');
     const consumer = this.getQueue('', queue).addConsumer(onMessage, options);
     return { consumerTag: consumer.consumerTag };
   }
 
   async cancel(consumerTag: string): Promise<amqp.Replies.Empty> {
+    this.wannaFail('cancel');
     Object.values(this.connection.queues).forEach(q => q.popConsumer(consumerTag));
     return {};
   }
 
   ack(message: amqp.Message, allUpTo?: boolean): void {
+    this.wannaFail('ack');
     this.getQueue(message.fields.exchange, message.fields.routingKey).ackMessage(message, allUpTo);
   }
 

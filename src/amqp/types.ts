@@ -29,6 +29,11 @@ export interface AMQPDriverChannel
     callback?: (err: any, ok: amqp.Replies.Empty) => void,  // only on confirm
   ): boolean;
 
+  get(
+    queue: string,
+    options?: amqp.Options.Get,
+  ): PromiseLike<amqp.GetMessage | false>;
+
   consume(
     queue: string,
     onMessage: (msg: amqp.ConsumeMessage | null) => any,

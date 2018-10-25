@@ -4,6 +4,47 @@ import * as mock from '../src/amqp/driver-mock';
 
 describe('amqp', () => {
   describe('AMQPConnector', () => {
+    describe('connect', () => {
+      it('retries errors', async () => {
+        let attempt = 0;
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connectionRetries: 1,
+          connectionDelay: 0,
+          connect() {
+            attempt += 1;
+            if (attempt % 2) throw new Error('Patatita connection error');
+            return connection;
+          },
+        });
+        await connector.push('q', 'msg', Buffer.from('test'));
+        const messages = connection.getQueue('', 'q').messages;
+        expect(messages).toHaveLength(1);
+        expect(attempt).toBe(2);
+      });
+
+      it('limit retries', async () => {
+        let attempt = 0;
+        const error = new Error('Patatita connection error');
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connectionRetries: 3,
+          connectionDelay: 0,
+          connect(): any {
+            attempt += 1;
+            throw error;
+          },
+        });
+        await expect(connector.push('q', 'msg', Buffer.from('test')))
+          .rejects.toBe(error);
+        const messages = connection.getQueue('', 'q').messages;
+        expect(messages).toHaveLength(0);
+        expect(attempt).toBe(3);
+      });
+    });
+
     describe('push', () => {
       it('pushes messages to queue', async () => {
         const connection = new mock.AMQPMockConnection();
@@ -23,6 +64,26 @@ describe('amqp', () => {
     });
 
     describe('pull', () => {
+      it('only one message', async () => {
+        const queue = 'test';
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({ name: 'test', connect: () => connection });
+        try {
+          connection.addMessage('', queue, Buffer.from('message1'));
+          connection.addMessage('', queue, Buffer.from('message2'));
+          const messages = connection.getQueue('', queue).messages;
+          expect(messages).toHaveLength(2);
+          await expect(connector.pull(queue))
+            .resolves.toMatchObject({ content: Buffer.from('message1') });
+          expect(messages).toHaveLength(1);
+          await expect(connector.pull(queue))
+            .resolves.toMatchObject({ content: Buffer.from('message2') });
+          expect(messages).toHaveLength(0);
+        } finally {
+          await connector.disconnect();
+        }
+      });
+
       it('honors ack', async () => {
         const queue = 'test';
         const connection = new mock.AMQPMockConnection();
@@ -32,7 +93,7 @@ describe('amqp', () => {
           const pending = connection.getQueue('', queue).pendings;
           const channel = await connector.channel();
           expect(pending.size).toBe(0);
-          const unacked = await connector.pull(queue, null, { channel, pull: { ack: false } });
+          const unacked = await connector.pull(queue, null, { channel, pull: { autoAck: false } });
           expect(pending.size).toBe(1);
           await channel.ack(unacked);
           expect(pending.size).toBe(0);

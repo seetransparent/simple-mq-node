@@ -32,9 +32,9 @@
     "watch": "tsc -w -p tsconfig.release.json",
     "lint": "tslint -t stylish -p tsconfig.json -c tslint.json",
     "pretest": "npm run lint",
-    "test": "npm run test-only",
+    "test": "npm run test-only --",
     "test-only": "jest --coverage",
-    "test:watch": "jest --watch",
+    "test:watch": "jest --coverage --watch",
     "git-hooks": "./git-hooks/install"
   },
   "jest": {
