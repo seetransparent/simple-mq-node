@@ -49,6 +49,8 @@ export interface AMQPOperationPullOptions extends AMQPOperationOptions {
 export interface AMQPOperationRPCOptions
   extends AMQPOperationPushOptions, AMQPOperationPullOptions {}
 
+export interface AMQPOperationClearOptions extends AMQPOperationOptions {}
+
 export class AMQPConnector
   extends ConnectionManager<AMQPDriverConnection>
   implements MessageQueueConnector<Buffer, amqp.Message>
@@ -407,12 +409,26 @@ export class AMQPConnector
         await this.push(queue, type, data, pushOptions);
         return await this.pull(responseQueue, null, pullOptions);
       } finally {
-        await channel.deleteQueue(responseQueue);
+        await this.clear(responseQueue, { channel });
       }
     } finally {
       if (!options.channel) {
         await channel.disconnect();
       }
+    }
+  }
+
+  /**
+   * Delete queue.
+   *
+   * @param queue queue name
+   */
+  async clear(queue: string, options: AMQPOperationClearOptions = {}): Promise<void> {
+    const channel = options.channel || await this.channel();
+    await channel.deleteQueue(queue);
+    this.asserted.del(queue);
+    if (!options.channel) {
+      await channel.disconnect();
     }
   }
 }
