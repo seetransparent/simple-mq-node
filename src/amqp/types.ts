@@ -1,7 +1,7 @@
 import * as events from 'events';
 import * as amqp from 'amqplib';
 
-export interface AMQPDriverChannel
+export interface AMQPDriverConfirmChannel
   extends Pick<events.EventEmitter, 'once' | 'removeListener'>
 {
   // had to rewrite all these interface methods to get rid of bluebird
@@ -26,7 +26,7 @@ export interface AMQPDriverChannel
     routingKey: string,
     content: Buffer,
     options?: amqp.Options.Publish,
-    callback?: (err: any, ok: amqp.Replies.Empty) => void,  // only on confirm
+    callback?: (err: any, ok: amqp.Replies.Empty) => void,
   ): boolean;
 
   get(
@@ -47,9 +47,10 @@ export interface AMQPDriverChannel
   reject(message: amqp.Message, requeue?: boolean): void;
 }
 
-export interface AMQPDriverConnection<T extends AMQPDriverChannel = AMQPDriverChannel> {
+export interface AMQPDriverConnection<
+  T extends AMQPDriverConfirmChannel = AMQPDriverConfirmChannel,
+> {
   close(): PromiseLike<void>;
-  createChannel(): PromiseLike<T>;
   createConfirmChannel(): PromiseLike<T>;
 }
 

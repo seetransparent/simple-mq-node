@@ -1,16 +1,14 @@
 import * as amqp from 'amqplib';
 
 import { ConnectionManager } from '../base';
-import { waitForEvent } from '../utils';
-import { AMQPDriverConnection, AMQPDriverChannel, Omit } from './types';
+import { AMQPDriverConnection, AMQPDriverConfirmChannel, Omit } from './types';
 
 export interface AMQPQueueAssertion extends amqp.Options.AssertQueue {
   conflict?: 'ignore' | 'raise';
 }
 
-export interface AMQPChannelOptions {
+export interface AMQPConfirmChannelOptions {
   manager: ConnectionManager<AMQPDriverConnection>;
-  confirm?: boolean;
   check?: string[];
   assert?: {
     [queue: string]: AMQPQueueAssertion;
@@ -19,25 +17,27 @@ export interface AMQPChannelOptions {
   connectionDelay?: number;
 }
 
-export interface AMQPChannelFullOptions extends AMQPChannelOptions {
+export interface AMQPConfirmChannelFullOptions
+  extends AMQPConfirmChannelOptions
+{
   check: string[];
   assert: {
     [queue: string]: AMQPQueueAssertion;
   };
 }
 
-export class AMQPChannel
-  extends ConnectionManager<AMQPDriverChannel>
+export class AMQPConfirmChannel
+  extends ConnectionManager<AMQPDriverConfirmChannel>
   implements Omit<
-    AMQPDriverChannel,
+    AMQPDriverConfirmChannel,
     'publish' | // overridden as async
     'checkQueue' | 'assertQueue' | // managed by constructor options
     'once' | 'removeListener' // not an EventEmitter atm
   >
 {
-  protected options: AMQPChannelFullOptions;
+  protected options: AMQPConfirmChannelFullOptions;
 
-  constructor(options: AMQPChannelOptions) {
+  constructor(options: AMQPConfirmChannelOptions) {
     super({
       connect: () => this.prepareChannel(),
       disconnect: con => con.close(),
@@ -47,20 +47,13 @@ export class AMQPChannel
     this.options = { check: [], assert: {}, ...options };
   }
 
-  protected get confirming() {
-    return this.options.confirm !== false;  // NOTE: undefined means true here
-  }
-
   /**
    * Create (uninitialized) channel
    */
-  protected async createChannel(): Promise<AMQPDriverChannel> {
-    const connection = await this.options.manager.connect();
+  protected async createChannel(): Promise<AMQPDriverConfirmChannel> {
+    const connection = await this.options.manager.connect({ retries: 0 });
     try {
-      if (this.confirming) {
-        return await connection.createConfirmChannel();
-      }
-      return await connection.createChannel();
+      return await connection.createConfirmChannel();
     } catch (e) {
       await this.options.manager.disconnect();  // dispose connection on error
       throw e;
@@ -70,7 +63,7 @@ export class AMQPChannel
   /**
    * Create and initialize channel with queues from config
    */
-  protected async prepareChannel(): Promise<AMQPDriverChannel> {
+  protected async prepareChannel(): Promise<AMQPDriverConfirmChannel> {
     let channel = await this.createChannel();
     for (const name of this.options.check) {
       await channel.checkQueue(name);
@@ -112,24 +105,14 @@ export class AMQPChannel
     content: Buffer,
     options?: amqp.Options.Publish,
   ): Promise<void> {
-    let channel: any;
+    const channel = await this.connect();
     try {
-      channel = await this.connect();
-    } catch (e) {
-      console.log(`TE ODIO ${e} ${'\n'.repeat(20)}`);
-      throw e;
-    }
-    try {
-      if (this.confirming) {
-        await new Promise(
-          (resolve, reject) => channel.publish(
-            exchange, routingKey, content, options,
-            (err: any) => err ? reject(err) : resolve(),
-          ),
-        );
-      } else if (!channel.publish(exchange, routingKey, content, options)) {
-        await waitForEvent(channel, 'drain');
-      }
+      await new Promise(
+        (resolve, reject) => channel.publish(
+          exchange, routingKey, content, options,
+          (err: any) => err ? reject(err) : resolve(),
+        ),
+      );
     } catch (e) {
       await this.disconnect(); // errors break channel
       throw e;

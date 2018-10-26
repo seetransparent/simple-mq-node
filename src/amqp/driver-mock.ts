@@ -3,7 +3,7 @@ import * as events from 'events';
 import * as uuid4 from 'uuid/v4';
 import * as amqp from 'amqplib';
 
-import { AMQPDriverConnection, AMQPDriverChannel } from './types';
+import { AMQPDriverConnection, AMQPDriverConfirmChannel } from './types';
 
 interface AMQPMockConsumer {
   received: Set<number>;
@@ -107,13 +107,6 @@ implements AMQPDriverConnection {
     this.wannaFail('close');
   }
 
-  async createChannel(): Promise<AMQPMockChannel> {
-    this.wannaFail('createChannel');
-    const channel = new AMQPMockChannel({ connection: this });
-    this.channels.push(channel);
-    return channel;
-  }
-
   async createConfirmChannel(): Promise<AMQPMockChannel> {
     this.wannaFail('createConfirmChannel');
     const channel = new AMQPMockChannel({ connection: this, confirm: true });
@@ -172,7 +165,7 @@ implements AMQPDriverConnection {
 
 export class AMQPMockChannel
 extends AMQPMockBase
-implements AMQPDriverChannel {
+implements AMQPDriverConfirmChannel {
   public confirm: boolean;
   public connection: AMQPMockConnection;
 

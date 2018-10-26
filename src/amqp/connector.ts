@@ -7,7 +7,7 @@ import { ConnectionManager, ConnectionManagerOptions } from '../base';
 import { TimeoutError, PullError } from '../errors';
 import { omit } from '../utils';
 
-import { AMQPChannel, AMQPChannelOptions } from './channel';
+import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
 import { AMQPDriverConnection, Omit } from './types';
 
 export interface AMQPConnectorOptions {
@@ -32,11 +32,11 @@ interface AMQPConnectorFullOptions
 }
 
 export interface AMQPOperationChannelOptions
-  extends Omit<AMQPChannelOptions, 'manager'> {}
+  extends Omit<AMQPConfirmChannelOptions, 'manager'> {}
 
 export interface AMQPOperationOptions {
   timeout?: number;
-  channel?: AMQPChannel;
+  channel?: AMQPConfirmChannel;
 }
 
 export interface AMQPOperationPushOptions extends AMQPOperationOptions {
@@ -72,7 +72,8 @@ export class AMQPConnector
     super({
       connect: opts.connect,
       disconnect: opts.disconnect,
-      retries: 0, // retries are perform by channel
+      retries: options.connectionRetries,
+      delay: options.connectionDelay,
     });
     this.options = opts;
     this.uuidName = this.options.name || this.constructor.name;
@@ -172,9 +173,10 @@ export class AMQPConnector
    *
    * @param options
    */
-  async channel(options: AMQPOperationChannelOptions = {}): Promise<AMQPChannel> {
-    // Custom channel class to allow reconnects... in the future
-    return new AMQPChannel({
+  async channel(
+    options: AMQPOperationChannelOptions = {},
+  ): Promise<AMQPConfirmChannel> {
+    return new AMQPConfirmChannel({
       manager: this,
       connectionRetries: this.options.connectionRetries,
       connectionDelay: this.options.connectionDelay,

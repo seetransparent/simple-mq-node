@@ -1,8 +1,11 @@
-export interface ConnectionManagerOptions<T> {
-  connect(): PromiseLike<T> | T;
-  disconnect(connection: T): PromiseLike<void> | void;
+export interface ConnectOptions {
   retries?: number;
   delay?: number;
+}
+
+export interface ConnectionManagerOptions<T> extends ConnectOptions{
+  connect(): PromiseLike<T> | T;
+  disconnect(connection: T): PromiseLike<void> | void;
 }
 
 export class ConnectionManager<T> {
@@ -12,13 +15,13 @@ export class ConnectionManager<T> {
     protected connectionOptions: ConnectionManagerOptions<T>,
   ) { }
 
-  protected async connectionAttempt() {
+  protected async connectionAttempt(options: ConnectOptions) {
     let lastError = new Error('No connection attempt has been made');
     for (
       let
         retry = -1,
-        retries = Math.max(this.connectionOptions.retries || 0, -1),
-        delay = this.connectionOptions.delay || NaN;
+        retries = Math.max(options.retries || 0, -1),
+        delay = Number.isFinite(options.delay as number) ? options.delay || 0 : 1000;
       retry < retries;
       retry += 1
     ) {
@@ -27,14 +30,18 @@ export class ConnectionManager<T> {
       } catch (e) {
         lastError = e;
       }
-      await new Promise(r => setTimeout(r, Number.isFinite(delay) ? delay : 1000));
+      await new Promise(r => setTimeout(r, delay));
     }
     throw lastError;
   }
 
-  async connect(): Promise<T> {
+  async connect(options: ConnectOptions = {}): Promise<T> {
     if (!this.connectionPromise) {
-      this.connectionPromise = this.connectionAttempt();
+      this.connectionPromise = this.connectionAttempt({
+        retries: this.connectionOptions.retries,
+        delay: this.connectionOptions.delay,
+        ...options,
+      });
     }
     try {
       return await this.connectionPromise;
