@@ -42,6 +42,8 @@ export interface AMQPDriverConfirmChannel
 
   cancel(consumerTag: string): PromiseLike<amqp.Replies.Empty>;
 
+  prefetch(count: number, global?: boolean): PromiseLike<amqp.Replies.Empty>;
+
   ack(message: amqp.Message, allUpTo?: boolean): void;
 
   reject(message: amqp.Message, requeue?: boolean): void;

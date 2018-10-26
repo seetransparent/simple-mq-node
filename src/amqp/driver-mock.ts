@@ -288,6 +288,10 @@ implements AMQPDriverConfirmChannel {
     return {};
   }
 
+  async prefetch(count: number, global?: boolean): Promise<amqp.Replies.Empty> {
+    return {};
+  }
+
   ack(message: amqp.Message, allUpTo?: boolean): void {
     this.wannaFail('ack');
     this.getQueue(message.fields.exchange, message.fields.routingKey).ackMessage(message, allUpTo);

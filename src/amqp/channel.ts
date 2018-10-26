@@ -13,6 +13,7 @@ export interface AMQPConfirmChannelOptions {
   assert?: {
     [queue: string]: AMQPQueueAssertion;
   };
+  prefetch?: number;
   connectionRetries?: number;
   connectionDelay?: number;
 }
@@ -31,7 +32,7 @@ export class AMQPConfirmChannel
   implements Omit<
     AMQPDriverConfirmChannel,
     'publish' | // overridden as async
-    'checkQueue' | 'assertQueue' | // managed by constructor options
+    'checkQueue' | 'assertQueue' | 'prefetch' | // managed by constructor options
     'once' | 'removeListener' // not an EventEmitter atm
   >
 {
@@ -65,6 +66,9 @@ export class AMQPConfirmChannel
    */
   protected async prepareChannel(): Promise<AMQPDriverConfirmChannel> {
     let channel = await this.createChannel();
+    if (this.options.prefetch) {
+      await channel.prefetch(this.options.prefetch);
+    }
     for (const name of this.options.check) {
       await channel.checkQueue(name);
     }
