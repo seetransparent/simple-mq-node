@@ -2,6 +2,7 @@ import * as amqp from 'amqplib';
 
 import { ConnectionManager } from '../base';
 import { AMQPDriverConnection, AMQPDriverConfirmChannel, Omit } from './types';
+import { awaitWithErrorEvents } from '../utils';
 
 export interface AMQPQueueAssertion extends amqp.Options.AssertQueue {
   conflict?: 'ignore' | 'raise';
@@ -74,9 +75,13 @@ export class AMQPConfirmChannel
     }
     for (const [name, options] of Object.entries(this.options.assert)) {
       try {
-        await channel.assertQueue(name, options);
+        await awaitWithErrorEvents(
+          channel,
+          [channel.assertQueue(name, options)],
+          ['close', 'error'],
+        );
       } catch (err) {
-        await this.disconnect(); // errors break channel
+        await Promise.resolve(channel.close()).catch(() => {}); // errors break channel
         if (options.conflict !== 'ignore') throw err;
         channel = await this.createChannel();
       }

@@ -1,14 +1,14 @@
 import * as amqp from 'amqplib';
-import * as uuid5 from 'uuid/v5';
 import * as uuid4 from 'uuid/v4';
+import * as LRU from 'lru-cache';
 
-import { MessageQueueConnector } from '../types';
-import { ConnectionManager, ConnectionManagerOptions } from '../base';
+import { MessageQueueConnector, AnyObject } from '../types';
+import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
 import { TimeoutError, PullError } from '../errors';
 import { omit } from '../utils';
 
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
-import { AMQPDriverConnection, Omit } from './types';
+import { AMQPDriverConnection, Omit, AMQPDriverConfirmChannel } from './types';
 
 export interface AMQPConnectorOptions {
   name: string;
@@ -56,6 +56,8 @@ export class AMQPConnector
   protected uuidName: string;
   protected uuidNamespace: string;
   protected options: AMQPConnectorFullOptions;
+  protected appId: string;
+  protected asserted: LRU.Cache<string, boolean>;
 
   constructor(options: AMQPConnectorOptions) {
     const opts: AMQPConnectorFullOptions = {
@@ -78,15 +80,17 @@ export class AMQPConnector
     this.options = opts;
     this.uuidName = this.options.name || this.constructor.name;
     this.uuidNamespace = uuid4();
+    this.appId = this.genId('app', this.uuidName, this.uuidNamespace);
+    this.asserted = new LRU();
+  }
+
+  connect(options?: ConnectOptions): Promise<AMQPDriverConnection> {
+    this.asserted.reset();
+    return super.connect(options);
   }
 
   protected genId(name: string, type?: string | null, uuid?: string | null) {
-    const id = uuid || uuid5([name, type].filter(x => x).join(':'), this.uuidNamespace);
-    return [name, type, id].filter(x => x).join(':');
-  }
-
-  protected appId(): string {
-    return this.genId('app', this.uuidName, this.uuidNamespace);
+    return [name, type, uuid || uuid4()].filter(x => x).join(':');
   }
 
   protected messageId(type?: string | null, options?: AMQPOperationPushOptions): string {
@@ -119,7 +123,11 @@ export class AMQPConnector
     if (options && options.push && options.push.replyTo) {
       return options.push.replyTo;
     }
-    return this.genId('response-queue', type);
+    let queue: string;
+    do {
+      queue = this.genId('response-queue', type);
+    } while (this.asserted.has(queue));
+    return queue;
   }
 
   protected checkMessage(
@@ -131,6 +139,15 @@ export class AMQPConnector
       (!correlationId || correlationId === message.properties.correlationId)
       && (!type || type === message.properties.type)
     );
+  }
+
+  protected filterAssert(assert: AnyObject): AnyObject {
+    return {
+      ...Object
+        .entries(assert)
+        .filter(([name]) => !this.asserted.has(name))
+        .map(([name, options]) => ({ name, options })),
+    };
   }
 
   async ping(): Promise<void> {
@@ -193,16 +210,16 @@ export class AMQPConnector
    * @param options
    */
   async push(queue: string, type: string, data: Buffer, options: AMQPOperationPushOptions = {}) {
-    const appId = this.appId();
+    const appId = this.appId;
     const messageId = this.messageId(type, options);
     const channel = options.channel || await this.channel({
       // ensure request queue is available
-      assert: {
-        [queue]: {
+      assert: this.filterAssert({
+        queue: {
           conflict: 'ignore',
           durable: true,
         },
-      },
+      }),
     });
     const publishOptions = {
       appId,
@@ -235,18 +252,18 @@ export class AMQPConnector
     type?: string | null,
     options: AMQPOperationPullOptions = {},
   ): Promise<amqp.Message> {
-    const appId = this.appId();
+    const appId = this.appId;
     const consumerTag = this.consumerTag(type, options);
     const autoAck = !options.pull || options.pull.autoAck !== false; // default to true
     const cancelAt = options.timeout ? Date.now() + options.timeout : Infinity;
     const channel = options.channel || await this.channel({
-      // ensure request queue is available
-      assert: {
-        [queue]: {
+      // ensure queue is available
+      assert: this.filterAssert({
+        queue: {
           conflict: 'ignore',
           durable: true,
         },
-      },
+      }),
     });
     const checkOptions = {
       type,
@@ -353,10 +370,12 @@ export class AMQPConnector
     const channel = options.channel || await this.channel({
       assert: {
         // ensure request queue is available
-        [queue]: {
-          conflict: 'ignore',
-          durable: true,
-        },
+        ...this.filterAssert({
+          queue: {
+            conflict: 'ignore',
+            durable: true,
+          },
+        }),
         // create exclusive response queue
         [responseQueue]: {
           exclusive: true,
@@ -366,6 +385,7 @@ export class AMQPConnector
       },
     });
     const pushOptions = {
+      channel,
       ...options,
       push: {
         correlationId,
@@ -374,6 +394,7 @@ export class AMQPConnector
       },
     };
     const pullOptions = {
+      channel,
       ...options,
       pull: {
         correlationId,
