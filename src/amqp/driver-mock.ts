@@ -3,6 +3,7 @@ import * as events from 'events';
 import * as uuid4 from 'uuid/v4';
 import * as amqp from 'amqplib';
 
+import { omit } from '../utils';
 import { AMQPDriverConnection, AMQPDriverConfirmChannel } from './types';
 
 interface AMQPMockConsumer {
@@ -157,7 +158,7 @@ implements AMQPDriverConnection {
         deliveryMode: undefined,
         priority: undefined,
         headers: {},
-        ...options,
+        ...omit(options, ['CC', 'BCC', 'mandatory', 'persistent']),
       },
     });
   }
