@@ -8,7 +8,7 @@ import { TimeoutError, PullError } from '../errors';
 import { omit } from '../utils';
 
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
-import { AMQPDriverConnection, Omit, AMQPDriverConfirmChannel } from './types';
+import { AMQPDriverConnection, Omit } from './types';
 
 export interface AMQPConnectorOptions {
   name: string;
