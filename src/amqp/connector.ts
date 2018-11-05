@@ -409,7 +409,7 @@ export class AMQPConnector
         await this.push(queue, type, data, pushOptions);
         return await this.pull(responseQueue, null, pullOptions);
       } finally {
-        await this.clear(responseQueue, { channel });
+        await this.purge(responseQueue, { channel });
       }
     } finally {
       if (!options.channel) {
@@ -423,7 +423,7 @@ export class AMQPConnector
    *
    * @param queue queue name
    */
-  async clear(queue: string, options: AMQPOperationClearOptions = {}): Promise<void> {
+  async purge(queue: string, options: AMQPOperationClearOptions = {}): Promise<void> {
     const channel = options.channel || await this.channel();
     await channel.deleteQueue(queue);
     this.asserted.del(queue);

@@ -7,10 +7,80 @@ Options, though, are driver-specific.
 
 Currently only supporting AMQP.
 
+```typescript
+import { AMQPConnector } from 'simple-mq-node';
+
+async function main () {
+  const connector = AMQPConnector({
+    uri: 'amqp://localhost',
+  });
+
+  const message = Buffer.from('this is my message');
+
+  await connector.push('test-queue', 'test', message);
+  const response = await connector.pull('test-queue');
+  console.log(response.content.toString());
+  console.log(JSON.stringify(response));
+}
+
+main();
+```
+
+## Push a message
 
 ```typescript
+import { AMQPConnector } from 'simple-mq-node';
 
-import { AMQPConnector } from '
+async function main () {
+  const connector = AMQPConnector({
+    uri: 'amqp://localhost',
+  });
 
+  const message = Buffer.from('this is my message');
 
+  await connector.push('test-queue', 'test', message);
+}
+```
+
+## Consume a message
+
+```typescript
+import { AMQPConnector } from 'simple-mq-node';
+
+async function main () {
+  const connector = AMQPConnector({
+    uri: 'amqp://localhost',
+  });
+
+  const response = await connector.pull('test-queue');
+}
+```
+
+## Pushing and consuming a message (RPC)
+
+```typescript
+import { AMQPConnector } from 'simple-mq-node';
+
+async function main () {
+  const connector = AMQPConnector({
+    uri: 'amqp://localhost',
+  });
+
+  const message = Buffer.from('this is my message');
+
+  const response = await connector.rpc('test-queue', 'test', message);
+}
+```
+
+## Remove a queue
+
+```typescript
+import { AMQPConnector } from 'simple-mq-node';
+
+async function main () {
+  const connector = AMQPConnector({
+    uri: 'amqp://localhost',
+  });
+  await connector.purge('test-queue');
+}
 ```

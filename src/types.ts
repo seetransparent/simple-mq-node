@@ -16,5 +16,5 @@ export interface MessageQueueConnector<T = any, V = any> extends Connector {
   rpc(queue: string, type: string, data: T, options?: AnyObject): Promise<V>;
   push(queue: string, type: string, data: T, options?: AnyObject): Promise<void>;
   pull(queue: string, type: string, options?: AnyObject): Promise<V>;
-  clear(queue: string): Promise<void>;
+  purge(queue: string): Promise<void>;
 }
