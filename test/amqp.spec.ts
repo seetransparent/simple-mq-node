@@ -1,5 +1,4 @@
 import * as lib from '../src/main';
-import * as base from '../src/base';
 import * as errors from '../src/errors';
 import * as mock from '../src/amqp/driver-mock';
 
