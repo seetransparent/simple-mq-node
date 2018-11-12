@@ -7,7 +7,6 @@ import { omit } from '../utils';
 import { AMQPDriverConnection, AMQPDriverConfirmChannel } from './types';
 
 interface AMQPMockConsumer {
-  received: Set<number>;
   consumerTag: string;
   handler: (msg: amqp.ConsumeMessage | null) => any;
   options: amqp.Options.Consume;
@@ -22,26 +21,18 @@ export class AMQPMockQueue {
   ) { }
 
   process() {
-    for (let message, i = 0; message = this.messages[i]; i += 1) {
-      const deliveryTag = message.fields.deliveryTag;
-      for (let consumer, j = 0; consumer = this.consumers[j]; j += 1) {
-        if (!consumer.received.has(deliveryTag)) {
-          const message = this.pickMessage(i, consumer.consumerTag, consumer.options);
-          consumer.received.add(deliveryTag);
-          consumer.handler(message);
-          i -= 1;
-          break;
-        }
-      }
+    for (let consumer, i = 0; consumer = this.consumers[i]; i += 1) {
+      const message = this.pickMessage(consumer.consumerTag, consumer.options);
+      consumer.handler(message);
+      break;
     }
   }
 
   pickMessage(
-    index: number = 0,
     consumerTag?: string | null,
     options?: amqp.Options.Consume,
   ): amqp.Message | null {
-    const [message] = this.messages.splice(index, 1);
+    const message = this.messages.shift();
 
     if (!message) return null;
 
@@ -269,7 +260,7 @@ implements AMQPDriverConfirmChannel {
     options?: amqp.Options.Get,
   ): Promise<amqp.GetMessage | false> {
     this.wannaFail('get');
-    return this.getQueue('', queue).pickMessage(0, null, options) as amqp.GetMessage || false;
+    return this.getQueue('', queue).pickMessage(null, options) as amqp.GetMessage || false;
   }
 
   async consume(

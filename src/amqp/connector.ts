@@ -31,6 +31,10 @@ interface AMQPConnectorFullOptions
   timeout: number;
 }
 
+interface CheckOptions extends Pick<amqp.MessageProperties, 'correlationId' | 'type'> {}
+
+class DuplicatedMessage extends Error {}
+
 export interface AMQPOperationChannelOptions
   extends Omit<AMQPConfirmChannelOptions, 'manager'> {}
 
@@ -143,13 +147,124 @@ export class AMQPConnector
     );
   }
 
-  protected filterAssert(assert: AnyObject): AnyObject {
+  protected assertOnce(assert: AnyObject): AnyObject {
     return {
       ...Object
         .entries(assert)
         .filter(([name]) => !this.asserted.has(name))
         .map(([name, options]) => ({ name, options })),
     };
+  }
+
+  protected async getMessage({
+    channel, queue, autoAck, cancelAt, getOptions, checkOptions,
+  }: {
+    channel: AMQPConfirmChannel;
+    queue: string;
+    autoAck: boolean;
+    cancelAt: number;
+    getOptions: amqp.Options.Get;
+    checkOptions: CheckOptions;
+  }): Promise<amqp.GetMessage | null> {
+    const received = new Set();
+    const promises: PromiseLike<void>[] = [];
+    try {
+      for (
+        let message: amqp.GetMessage | false;
+        message = await channel.get(queue, getOptions);
+      ) {
+        if (this.checkMessage(message, checkOptions)) {
+          if (autoAck) promises.push(channel.ack(message));
+          return message;
+        }
+
+        promises.push(channel.reject(message, true)); // requeue
+
+        if (Date.now() > cancelAt) {
+          throw new TimeoutError('Timeout reached');
+        }
+
+        if (received.has(message.properties.messageId)) {
+          throw new DuplicatedMessage(`Duplicated message ${message.properties.messageId}`);
+        }
+
+        received.add(message.properties.messageId);
+      }
+    } finally {
+      await Promise.all(promises);
+    }
+    return null;
+  }
+
+  protected async consumeOnce({
+    channel, queue, autoAck, cancelAt, consumeOptions, checkOptions,
+  }: {
+    channel: AMQPConfirmChannel;
+    queue: string;
+    autoAck: boolean;
+    cancelAt: number;
+    consumeOptions: amqp.Options.Consume & { consumerTag: string };
+    checkOptions: CheckOptions;
+  }): Promise<amqp.ConsumeMessage> {
+    const received = new Set();
+    const promises: Promise<any>[] = [];
+    try {
+      // at last resort, subscribe to queue and return single message
+      return await new Promise<amqp.Message>((resolve, reject) => {
+        let finished = false;
+        let guard: NodeJS.Timer;
+
+        // node-style callback function
+        function callback(err?: Error | null, message?: amqp.Message) {
+          // keep this synchronous to prevent race conditions
+          if (!finished) {
+            finished = true;
+            if (guard) clearTimeout(guard);
+            channel
+              .cancel(consumeOptions.consumerTag)
+              .then(
+                () => err ? reject(err) : resolve(message),
+                (err2: Error) => reject(err || err2),
+              );
+          }
+        }
+
+        // setup timeout
+        if (Number.isFinite(cancelAt)) {
+          guard = setTimeout(
+            () => callback(new TimeoutError('Timeout reached')),
+            cancelAt - Date.now(),
+          );
+        }
+
+        // subscribe
+        channel
+          .consume(
+            queue,
+            (message) => {
+              if (!message) {
+                callback(
+                  new PullError('Cancelled by remote server'),
+                );
+              } else if (received.has(message.properties.messageId)) {
+                callback(
+                  new DuplicatedMessage(`Duplicated message ${message.properties.messageId}`),
+                );
+              } else if (finished || !this.checkMessage(message, checkOptions)) {
+                received.add(message.properties.messageId);
+                promises.push(channel.reject(message, true)); // requeue
+              } else {
+                if (autoAck) promises.push(channel.ack(message));
+                callback(null, message);
+              }
+            },
+            consumeOptions,
+          )
+          .catch(callback);
+      });
+    } finally {
+      await Promise.all(promises);
+    }
   }
 
   async ping(): Promise<void> {
@@ -215,8 +330,8 @@ export class AMQPConnector
     const appId = this.appId;
     const messageId = this.messageId(type, options);
     const channel = options.channel || await this.channel({
-      // ensure request queue is available
-      assert: this.filterAssert({
+      assert: this.assertOnce({
+        // ensure request queue is available
         queue: {
           conflict: 'ignore',
           durable: true,
@@ -254,101 +369,67 @@ export class AMQPConnector
     type?: string | null,
     options: AMQPOperationPullOptions = {},
   ): Promise<amqp.Message> {
-    const appId = this.appId;
     const consumerTag = this.consumerTag(type, options);
     const autoAck = !options.pull || options.pull.autoAck !== false; // default to true
     const cancelAt = options.timeout ? Date.now() + options.timeout : Infinity;
     const channel = options.channel || await this.channel({
-      // ensure queue is available
-      assert: this.filterAssert({
+      assert: this.assertOnce({
+        // ensure queue is available
         queue: {
           conflict: 'ignore',
           durable: true,
         },
       }),
     });
-    const checkOptions = {
-      type,
-      correlationId: options && options.pull ? options.pull.correlationId : undefined,
-    };
-    const getOptions = {
-      noAck: options.pull ? options.pull.noAck : false,
-    };
-    const consumeOptions = {
-      appId,
-      consumerTag,
-      ...omit(options.pull, ['correlationId', 'autoAck']),
+    const commonOptions = {
+      channel,
+      queue,
+      autoAck,
+      cancelAt,
+      checkOptions: {
+        type,
+        correlationId: options && options.pull ? options.pull.correlationId : undefined,
+      },
     };
 
-    const promises: Promise<any>[] = [];
     try {
-      // try using get (faster and safer, avoiding consumer management)
-      for (
-        let message: amqp.GetMessage | false;
-        message = await channel.get(queue, getOptions);
-      ) {
-        if (this.checkMessage(message, checkOptions)) {
-          if (autoAck) promises.push(channel.ack(message));
-          return message;
-        }
-
-        promises.push(channel.reject(message, true)); // requeue
-
-        if (Date.now() > cancelAt) {
-          throw new TimeoutError(`Timeout after ${options.timeout}ms`);
-        }
-      }
-
-      // at last resort, subscribe to queue and return single message
-      return await new Promise<amqp.Message>((resolve, reject) => {
-        let finished = false;
-        function callback(err?: Error | null, message?: amqp.Message) {
-          // keep this synchronous to prevent race conditions
-          if (!finished) {
-            finished = true;
-            if (guard) clearTimeout(guard);
-            channel
-              .cancel(consumerTag)
-              .then(
-                () => err ? reject(err) : resolve(message),
-                (err2: Error) => reject(err || err2),
-              );
-          }
-        }
-
-        let guard: NodeJS.Timer;
-        if (Number.isFinite(cancelAt)) {
-          guard = setTimeout(
-            () => callback(new TimeoutError(`Timeout after ${options.timeout}ms`)),
-            cancelAt - Date.now(),
-          );
-        }
-
-        // subscribe
-        channel
-          .consume(
-            queue,
-            (message) => {
-              if (!message) {
-                callback(new PullError('Cancelled by remote server'));
-              } else if (finished || !this.checkMessage(message, checkOptions)) {
-                promises.push(channel.reject(message, true)); // requeue
-              } else {
-                if (autoAck) promises.push(channel.ack(message));
-                callback(null, message);
-              }
-            },
-            consumeOptions,
-          )
-          .catch(callback);
-      });
-    } finally {
+      const methods = [
+        // try using get (faster and safer, avoiding consumer management)
+        () => this.getMessage({
+          ...commonOptions,
+          getOptions: {
+            noAck: options.pull ? options.pull.noAck : false,
+          },
+        }),
+        () => this.consumeOnce({
+          ...commonOptions,
+          consumeOptions: {
+            consumerTag,
+            ...omit(options.pull, ['correlationId', 'autoAck']),
+          },
+        }),
+      ];
       try {
-        await Promise.all(promises); // wait for pending promises
-      } finally {
-        if (!options.channel) {
-          await channel.disconnect();
+        for (const method of methods) {
+          const message = await method();
+          if (message) return message;
         }
+      } catch (e) {
+        if (e instanceof DuplicatedMessage) {
+          const timeout = Math.min((cancelAt - Date.now()) / 2, 100);
+          return await this.pull(queue, type, { ...options, channel, timeout });
+        }
+        throw e;
+      }
+      throw Error('Unexpected condition, runtime error');
+    } catch (e) {
+      if (e instanceof TimeoutError) {
+        throw new TimeoutError(`Timeout after ${options.timeout}ms`);
+      }
+      throw e;
+    } finally {
+      if (!options.channel) {
+        await channel.disconnect();
       }
     }
   }
@@ -370,21 +451,19 @@ export class AMQPConnector
     const correlationId = this.correlationId(type, options);
     const responseQueue = this.responseQueue(type, options);
     const channel = options.channel || await this.channel({
-      assert: {
+      assert: this.assertOnce({
         // ensure request queue is available
-        ...this.filterAssert({
-          queue: {
-            conflict: 'ignore',
-            durable: true,
-          },
-        }),
+        queue: {
+          conflict: 'ignore',
+          durable: true,
+        },
         // create exclusive response queue
         [responseQueue]: {
           exclusive: true,
           durable: true,
           autoDelete: true,  // avoids zombie result queues
         },
-      },
+      }),
     });
     const pushOptions = {
       channel,
