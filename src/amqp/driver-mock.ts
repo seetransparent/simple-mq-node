@@ -23,8 +23,8 @@ export class AMQPMockQueue {
   process() {
     for (let consumer, i = 0; consumer = this.consumers[i]; i += 1) {
       const message = this.pickMessage(consumer.consumerTag, consumer.options);
-      consumer.handler(message);
-      break;
+      if (message) consumer.handler(message);
+      else break;
     }
   }
 
