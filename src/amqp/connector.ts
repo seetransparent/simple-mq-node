@@ -213,21 +213,46 @@ export class AMQPConnector
       return await new Promise<amqp.Message>((resolve, reject) => {
         let finished = false;
         let guard: NodeJS.Timer;
-
-        // node-style callback function
-        function callback(err?: Error | null, message?: amqp.Message) {
-          // keep this synchronous to prevent race conditions
+        const callback = (error: Error | null, message?: amqp.Message | null): void => {
           if (!finished) {
-            finished = true;
+            if (!error) {
+              if (!message) {
+                return callback(
+                  new PullError('Cancelled by remote server'),
+                );
+              }
+              if (received.has(message.properties.messageId)) {
+                promises.push(channel.reject(message, true)); // requeue
+                return callback(
+                  new DuplicatedMessage(`Duplicated message ${message.properties.messageId}`),
+                );
+              }
+              if (!this.checkMessage(message, checkOptions)) {
+                promises.push(channel.reject(message, true)); // requeue
+                received.add(message.properties.messageId);
+                return; // do not resolve
+              }
+              if (autoAck) {
+                promises.push(channel.ack(message));
+              }
+            }
+
+            finished = true; // it's important to keep this synchronous
             if (guard) clearTimeout(guard);
+
+            // unsubscribe and resolve or reject
             channel
               .cancel(consumeOptions.consumerTag)
               .then(
-                () => err ? reject(err) : resolve(message),
-                (err2: Error) => reject(err || err2),
+                () => (message && !error) ? resolve(message) : reject(error),
+                () => (message && !error) ? resolve(message) : reject(error),
+                // we do not care about handling here because both message and
+                // original error are both more important than unsubscribing
               );
+          } else if (message) {
+            channel.reject(message, true).catch(() => {}); // unhandleable
           }
-        }
+        };
 
         // setup timeout
         if (Number.isFinite(cancelAt)) {
@@ -239,27 +264,7 @@ export class AMQPConnector
 
         // subscribe
         channel
-          .consume(
-            queue,
-            (message) => {
-              if (!message) {
-                callback(
-                  new PullError('Cancelled by remote server'),
-                );
-              } else if (received.has(message.properties.messageId)) {
-                callback(
-                  new DuplicatedMessage(`Duplicated message ${message.properties.messageId}`),
-                );
-              } else if (finished || !this.checkMessage(message, checkOptions)) {
-                received.add(message.properties.messageId);
-                promises.push(channel.reject(message, true)); // requeue
-              } else {
-                if (autoAck) promises.push(channel.ack(message));
-                callback(null, message);
-              }
-            },
-            consumeOptions,
-          )
+          .consume(queue, message => callback(null, message), consumeOptions)
           .catch(callback);
       });
     } finally {
