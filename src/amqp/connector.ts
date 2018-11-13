@@ -53,7 +53,7 @@ export interface AMQPOperationPullOptions extends AMQPOperationOptions {
 export interface AMQPOperationRPCOptions
   extends AMQPOperationPushOptions, AMQPOperationPullOptions {}
 
-export interface AMQPOperationClearOptions extends AMQPOperationOptions {}
+export interface AMQPOperationDisposeOptions extends AMQPOperationOptions {}
 
 export class AMQPConnector
   extends ConnectionManager<AMQPDriverConnection>
@@ -272,6 +272,9 @@ export class AMQPConnector
     }
   }
 
+  /**
+   * Check channel creation and both message pull and push works
+   */
   async ping(): Promise<void> {
     const type = 'ping';
     const queue = this.responseQueue(type);
@@ -299,7 +302,7 @@ export class AMQPConnector
         throw new Error('AMQP message corrupted');
       }
     } finally {
-      await channel.deleteQueue(queue);
+      await this.dispose(queue, { channel });
       await channel.disconnect();
     }
   }
@@ -385,6 +388,7 @@ export class AMQPConnector
           durable: true,
         },
       }),
+      prefetch: 1,
     });
     const commonOptions = {
       channel,
@@ -469,6 +473,7 @@ export class AMQPConnector
           autoDelete: true,  // avoids zombie result queues
         },
       }),
+      prefetch: 1,
     });
     const pushOptions = {
       channel,
@@ -493,7 +498,7 @@ export class AMQPConnector
         await this.push(queue, type, data, pushOptions);
         return await this.pull(responseQueue, null, pullOptions);
       } finally {
-        await this.purge(responseQueue, { channel });
+        await this.dispose(responseQueue, { channel });
       }
     } finally {
       if (!options.channel) {
@@ -506,8 +511,9 @@ export class AMQPConnector
    * Delete queue.
    *
    * @param queue queue name
+   * @param options
    */
-  async purge(queue: string, options: AMQPOperationClearOptions = {}): Promise<void> {
+  async dispose(queue: string, options: AMQPOperationDisposeOptions = {}): Promise<void> {
     const channel = options.channel || await this.channel();
     await channel.deleteQueue(queue);
     this.asserted.del(queue);

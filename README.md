@@ -81,6 +81,6 @@ async function main () {
   const connector = AMQPConnector({
     uri: 'amqp://localhost',
   });
-  await connector.purge('test-queue');
+  await connector.dispose('test-queue');
 }
 ```
