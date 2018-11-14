@@ -13,7 +13,7 @@
   },
   "devDependencies": {
     "@types/jest": "~22.2.3",
-    "@types/node": "~8.10.18",
+    "@types/node": "~8.10.37",
     "babel-jest": "^23.0.0",
     "dtslint": "^0.3.0",
     "jest": "~23.5.0",
