@@ -39,8 +39,7 @@ describe('amqp', () => {
         });
         await expect(connector.push('q', 'msg', Buffer.from('test')))
           .rejects.toBe(error);
-        const messages = connection.getQueue('', 'q').messages;
-        expect(messages).toHaveLength(0);
+        expect(() => connection.getQueue('', 'q')).toThrow('queue q does not exist');
         expect(attempt).toBe(4);
       });
     });

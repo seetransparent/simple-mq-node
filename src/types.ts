@@ -1,5 +1,5 @@
-export interface AnyObject {
-  [property: string]: any;
+export interface AnyObject<T = any> {
+  [property: string]: T;
 }
 
 export interface ConnectorOptions {

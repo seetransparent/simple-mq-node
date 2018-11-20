@@ -109,12 +109,24 @@ implements AMQPDriverConnection {
   getQueue(
     exchange: string,
     routingKey: string,
-    options: amqp.Options.AssertQueue = {},
   ): AMQPMockQueue {
     const name = [exchange, routingKey].filter(x => x).join(':');
     const existing = this.queues[name];
     if (existing) return existing;
-    return this.queues[name] = new AMQPMockQueue(options);
+    throw new Error(`queue ${routingKey} does not exist`);
+  }
+
+  getOrCreateQueue(
+    exchange: string,
+    routingKey: string,
+    options: amqp.Options.AssertQueue = {},
+  ): AMQPMockQueue {
+    try {
+      return this.getQueue(exchange, routingKey);
+    } catch (e) {
+      const name = [exchange, routingKey].filter(x => x).join(':');
+      return this.queues[name] = new AMQPMockQueue(options);
+    }
   }
 
   addMessage(
@@ -124,7 +136,7 @@ implements AMQPDriverConnection {
     options?: amqp.Options.Publish,
   ): amqp.Message {
     const deliveryTag = this.messageCounter;
-    const queue = this.getQueue(exchange, routingKey);
+    const queue = this.getOrCreateQueue(exchange, routingKey);
     this.messageCounter += 1;
     return queue.addMessage({
       content,
@@ -160,6 +172,7 @@ extends AMQPMockBase
 implements AMQPDriverConfirmChannel {
   public confirm: boolean;
   public connection: AMQPMockConnection;
+  protected errored: Error;
 
   constructor({
     connection,
@@ -171,9 +184,11 @@ implements AMQPDriverConfirmChannel {
     super();
     this.connection = connection;
     this.confirm = confirm;
+    this.once('error', e => this.errored = e);
   }
 
   wannaFail(method: string) {
+    if (this.errored) throw this.errored;
     if (this.failing[method]) throw this.failing[method];
     this.connection.wannaFail(`channel.${method}`);
   }
@@ -189,7 +204,7 @@ implements AMQPDriverConfirmChannel {
     options: amqp.Options.AssertQueue = {},
   ): Promise<amqp.Replies.AssertQueue> {
     this.wannaFail('assertQueue');
-    const q = this.connection.getQueue('', queue, options);
+    const q = this.connection.getOrCreateQueue('', queue, options);
     return {
       queue,
       messageCount: q.messages.length,
@@ -216,14 +231,6 @@ implements AMQPDriverConfirmChannel {
     return { messageCount };
   }
 
-  protected getQueue(
-    exchange: string,
-    routingKey: string,
-    options: amqp.Options.AssertQueue = {},
-  ): AMQPMockQueue {
-    return this.connection.getQueue(exchange, routingKey, options);
-  }
-
   protected addMessage(
     exchange: string,
     routingKey: string,
@@ -247,7 +254,7 @@ implements AMQPDriverConfirmChannel {
     callback?: (err: any, ok: amqp.Replies.Empty) => void,
   ): boolean {
     this.wannaFail('publish');
-    if (Math.random() > 0.5) {
+    if (Math.round(Math.random())) {
       this.addMessage(exchange, routingKey, content, options, callback);
       return true;
     }
@@ -260,7 +267,16 @@ implements AMQPDriverConfirmChannel {
     options?: amqp.Options.Get,
   ): Promise<amqp.GetMessage | false> {
     this.wannaFail('get');
-    return this.getQueue('', queue).pickMessage(null, options) as amqp.GetMessage || false;
+    const q = this.connection.getQueue('', queue);
+    if (q) {
+      return q.pickMessage(null, options) as amqp.GetMessage || false;
+    }
+    // this behavior is really weird, but this is how protocol works
+    this.emit('error', new Error(
+      'Channel closed by server: 404 (NOT-FOUND) with message '
+      + `"NOT_FOUND - no queue '${queue}' in vhost '/'"`,
+    ));
+    return false;
   }
 
   async consume(
@@ -269,8 +285,19 @@ implements AMQPDriverConfirmChannel {
     options: amqp.Options.Consume = {},
   ): Promise<amqp.Replies.Consume> {
     this.wannaFail('consume');
-    const consumer = this.getQueue('', queue).addConsumer(onMessage, options);
-    return { consumerTag: consumer.consumerTag };
+    const q = this.connection.getQueue('', queue);
+    if (q) {
+      const consumer = q.addConsumer(onMessage, options);
+      return { consumerTag: consumer.consumerTag };
+    }
+    this.emit('error', new Error(
+      'Channel closed by server: 404 (NOT-FOUND) with message '
+      + `"NOT_FOUND - no queue '${queue}' in vhost '/'"`,
+    ));
+    throw new Error(
+      'Channel closed by server: 404 (NOT-FOUND) with message '
+      + `"NOT_FOUND - no queue '${queue}' in vhost '/'"`,
+    );
   }
 
   async cancel(consumerTag: string): Promise<amqp.Replies.Empty> {
@@ -285,13 +312,17 @@ implements AMQPDriverConfirmChannel {
 
   ack(message: amqp.Message, allUpTo?: boolean): void {
     this.wannaFail('ack');
-    this.getQueue(message.fields.exchange, message.fields.routingKey).ackMessage(message, allUpTo);
+    this.connection
+      .getOrCreateQueue(message.fields.exchange, message.fields.routingKey)
+      .ackMessage(message, allUpTo);
   }
 
   reject(message: amqp.Message, requeue?: boolean): void {
     if (requeue) {
       message.fields.redelivered = true;
-      this.getQueue(message.fields.exchange, message.fields.routingKey).addMessage(message);
+      this.connection
+        .getOrCreateQueue(message.fields.exchange, message.fields.routingKey)
+        .addMessage(message);
     }
   }
 }

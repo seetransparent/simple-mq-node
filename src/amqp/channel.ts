@@ -15,6 +15,9 @@ export interface AMQPConfirmChannelOptions {
     [queue: string]: AMQPQueueAssertion;
   };
   prefetch?: number;
+  channelId?: string;
+  channelType?: string;
+  inactivityTime?: number;
   connectionRetries?: number;
   connectionDelay?: number;
 }
@@ -26,6 +29,7 @@ export interface AMQPConfirmChannelFullOptions
   assert: {
     [queue: string]: AMQPQueueAssertion;
   };
+  inactivityTime: number;
 }
 
 export class AMQPConfirmChannel
@@ -38,6 +42,8 @@ export class AMQPConfirmChannel
   >
 {
   protected options: AMQPConfirmChannelFullOptions;
+  protected prepareQueues: boolean;
+  protected expiration: number;
 
   constructor(options: AMQPConfirmChannelOptions) {
     super({
@@ -46,7 +52,34 @@ export class AMQPConfirmChannel
       retries: options.connectionRetries,
       delay: options.connectionDelay,
     });
-    this.options = { check: [], assert: {}, ...options };
+    this.options = { check: [], assert: {}, inactivityTime: 3e5, ...options };
+    this.prepareQueues = true;
+    this.expiration = 0;
+  }
+
+  async connect(): Promise<AMQPDriverConfirmChannel> {
+    // Disconnect on expired channel
+    const now = Date.now();
+    if (this.expiration < now) {
+      await this.disconnect();
+    }
+    // Reconnect (if not connected)
+    this.expiration = now + this.options.inactivityTime;
+    return await super.connect();
+  }
+
+  /**
+   * Channel type passed to options
+   */
+  get channelType(): string | null {
+    return this.options.channelType || null;
+  }
+
+  /**
+   * Channel identifier passed to options
+   */
+  get channelId(): string | null {
+    return this.options.channelId || null;
   }
 
   /**
@@ -55,7 +88,9 @@ export class AMQPConfirmChannel
   protected async createChannel(): Promise<AMQPDriverConfirmChannel> {
     const connection = await this.options.manager.connect({ retries: 0 });
     try {
-      return await connection.createConfirmChannel();
+      const channel = await connection.createConfirmChannel();
+      channel.once('error', () => this.options.manager.disconnect());
+      return channel;
     } catch (e) {
       await this.options.manager.disconnect();  // dispose connection on error
       throw e;
@@ -70,21 +105,24 @@ export class AMQPConfirmChannel
     if (this.options.prefetch) {
       await channel.prefetch(this.options.prefetch);
     }
-    for (const name of this.options.check) {
-      await channel.checkQueue(name);
-    }
-    for (const [name, options] of Object.entries(this.options.assert)) {
-      try {
-        await awaitWithErrorEvents(
-          channel,
-          [channel.assertQueue(name, options)],
-          ['close', 'error'],
-        );
-      } catch (err) {
-        await Promise.resolve(channel.close()).catch(() => {}); // errors break channel
-        if (options.conflict !== 'ignore') throw err;
-        channel = await this.createChannel();
+    if (this.prepareQueues) {
+      for (const name of this.options.check) {
+        await channel.checkQueue(name);
       }
+      for (const [name, options] of Object.entries(this.options.assert)) {
+        try {
+          await awaitWithErrorEvents(
+            channel,
+            [channel.assertQueue(name, options)],
+            ['close', 'error'],
+          );
+        } catch (err) {
+          await Promise.resolve(channel.close()).catch(() => {}); // errors break channel
+          if (options.conflict !== 'ignore') throw err;
+          channel = await this.createChannel();
+        }
+      }
+      this.prepareQueues = false;
     }
     return channel;
   }

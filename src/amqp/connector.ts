@@ -1,11 +1,10 @@
 import * as amqp from 'amqplib';
 import * as uuid4 from 'uuid/v4';
-import * as LRU from 'lru-cache';
 
-import { MessageQueueConnector, AnyObject } from '../types';
+import { MessageQueueConnector } from '../types';
 import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
 import { TimeoutError, PullError } from '../errors';
-import { omit } from '../utils';
+import { omit, objectKey, adler32 } from '../utils';
 
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
 import { AMQPDriverConnection, Omit } from './types';
@@ -63,7 +62,6 @@ export class AMQPConnector
   protected uuidNamespace: string;
   protected options: AMQPConnectorFullOptions;
   protected appId: string;
-  protected asserted: LRU.Cache<string, boolean>;
 
   constructor(options: AMQPConnectorOptions) {
     const opts: AMQPConnectorFullOptions = {
@@ -87,12 +85,10 @@ export class AMQPConnector
     this.uuidName = this.options.name || this.constructor.name;
     this.uuidNamespace = uuid4();
     this.appId = this.genId('app', this.uuidName, this.uuidNamespace);
-    this.asserted = new LRU();
   }
 
-  connect(options?: ConnectOptions): Promise<AMQPDriverConnection> {
-    this.asserted.reset();
-    return super.connect(options);
+  async connect(options?: ConnectOptions): Promise<AMQPDriverConnection> {
+    return await super.connect(options);
   }
 
   protected genId(name: string, type?: string | null, uuid?: string | null) {
@@ -129,11 +125,7 @@ export class AMQPConnector
     if (options && options.push && options.push.replyTo) {
       return options.push.replyTo;
     }
-    let queue: string;
-    do {
-      queue = this.genId('response-queue', type);
-    } while (this.asserted.has(queue));
-    return queue;
+    return this.genId('response-queue', type);
   }
 
   protected checkMessage(
@@ -145,15 +137,6 @@ export class AMQPConnector
       (!correlationId || correlationId === message.properties.correlationId)
       && (!type || type === message.properties.type)
     );
-  }
-
-  protected assertOnce(assert: AnyObject): AnyObject {
-    return {
-      ...Object
-        .entries(assert)
-        .filter(([name]) => !this.asserted.has(name))
-        .map(([name, options]) => ({ name, options })),
-    };
   }
 
   protected async getMessage({
@@ -327,6 +310,26 @@ export class AMQPConnector
   }
 
   /**
+   * (stub) Pull channel from channel pool, or create a new one
+   * @param options
+   */
+  protected async pullChannel(
+    options: AMQPOperationChannelOptions = {},
+  ): Promise<AMQPConfirmChannel> {
+    const channelType = options.channelType || adler32(objectKey(options)).toString(16);
+    const channelId = options.channelId || this.genId('channelId', channelType);
+    return await this.channel({ channelType, channelId, ...options });
+  }
+
+  /**
+   * (stub) Push channel to channel pool
+   * @param channel
+   */
+  protected async pushChannel(channel: AMQPConfirmChannel): Promise<void> {
+    await channel.disconnect();
+  }
+
+  /**
    * Push message to given queue
    *
    * @param queue queue name
@@ -337,14 +340,14 @@ export class AMQPConnector
   async push(queue: string, type: string, data: Buffer, options: AMQPOperationPushOptions = {}) {
     const appId = this.appId;
     const messageId = this.messageId(type, options);
-    const channel = options.channel || await this.channel({
-      assert: this.assertOnce({
+    const channel = options.channel || await this.pullChannel({
+      assert: {
         // ensure request queue is available
-        queue: {
+        [queue]: {
           conflict: 'ignore',
           durable: true,
         },
-      }),
+      },
     });
     const publishOptions = {
       appId,
@@ -361,7 +364,7 @@ export class AMQPConnector
       await channel.publish(exchange, queue, data, publishOptions);
     }
     if (!options.channel) {
-      await channel.disconnect();
+      await this.pushChannel(channel);
     }
   }
 
@@ -380,14 +383,14 @@ export class AMQPConnector
     const consumerTag = this.consumerTag(type, options);
     const autoAck = !options.pull || options.pull.autoAck !== false; // default to true
     const cancelAt = options.timeout ? Date.now() + options.timeout : Infinity;
-    const channel = options.channel || await this.channel({
-      assert: this.assertOnce({
+    const channel = options.channel || await this.pullChannel({
+      assert: {
         // ensure queue is available
-        queue: {
+        [queue]: {
           conflict: 'ignore',
           durable: true,
         },
-      }),
+      },
       prefetch: 1,
     });
     const commonOptions = {
@@ -438,7 +441,7 @@ export class AMQPConnector
       throw e;
     } finally {
       if (!options.channel) {
-        await channel.disconnect();
+        await this.pushChannel(channel);
       }
     }
   }
@@ -459,10 +462,10 @@ export class AMQPConnector
   ): Promise<amqp.Message> {
     const correlationId = this.correlationId(type, options);
     const responseQueue = this.responseQueue(type, options);
-    const channel = options.channel || await this.channel({
-      assert: this.assertOnce({
+    const channel = options.channel || await this.pullChannel({
+      assert: {
         // ensure request queue is available
-        queue: {
+        [queue]: {
           conflict: 'ignore',
           durable: true,
         },
@@ -472,7 +475,7 @@ export class AMQPConnector
           durable: true,
           autoDelete: true,  // avoids zombie result queues
         },
-      }),
+      },
       prefetch: 1,
     });
     const pushOptions = {
@@ -502,7 +505,7 @@ export class AMQPConnector
       }
     } finally {
       if (!options.channel) {
-        await channel.disconnect();
+        await this.pushChannel(channel);
       }
     }
   }
@@ -514,11 +517,10 @@ export class AMQPConnector
    * @param options
    */
   async dispose(queue: string, options: AMQPOperationDisposeOptions = {}): Promise<void> {
-    const channel = options.channel || await this.channel();
+    const channel = options.channel || await this.pullChannel();
     await channel.deleteQueue(queue);
-    this.asserted.del(queue);
     if (!options.channel) {
-      await channel.disconnect();
+      await this.pushChannel(channel);
     }
   }
 }
