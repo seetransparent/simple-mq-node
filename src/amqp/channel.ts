@@ -86,12 +86,23 @@ export class AMQPConfirmChannel
    */
   protected async createChannel(): Promise<AMQPDriverConfirmChannel> {
     const connection = await this.options.manager.connect({ retries: 0 });
-    try {
-      const channel = await connection.createConfirmChannel();
-      return channel;
-    } catch (e) {
-      await this.disconnect();  // dispose connection on error
-      throw e;
+    let attempt = 0;
+    while (true) {
+      try {
+        return await connection.createConfirmChannel();
+      } catch (e) {
+        await this.disconnect();  // dispose connection on error
+        if (
+          e.message.indexOf('CHANNEL_ERROR - second \'channel.open\' seen"') > -1 &&
+          attempt < 100
+        ) {
+          // amqplib is buggy as hell: https://github.com/squaremo/amqp.node/issues/441
+          await new Promise(r => setTimeout(r, 100));
+          attempt += 1;
+          continue;
+        }
+        throw e;
+      }
     }
   }
 

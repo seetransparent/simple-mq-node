@@ -22,6 +22,13 @@ describe('amqp', () => {
         const messages = connection.getQueue('', 'q').messages;
         expect(messages).toHaveLength(1);
         expect(attempt).toBe(2);
+
+        connection.failing.createConfirmChannel = new Error(
+          'Connection closed: 504(CHANNEL - ERROR) with message '
+          + '"CHANNEL_ERROR - second \'channel.open\' seen"',
+        );
+        setTimeout(() => delete connection.failing.createConfirmChannel, 200);
+        await expect(connector.channel()).resolves.toBeTruthy();
       });
 
       it('limit retries', async () => {
