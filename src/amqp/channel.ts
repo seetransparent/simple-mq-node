@@ -126,9 +126,12 @@ export class AMQPConfirmChannel
             ['close', 'error'],
           );
         } catch (err) {
-          await Promise.resolve(channel.close()).catch(() => {}); // errors break channel
-          if (options.conflict !== 'ignore') throw err;
+          if (options.conflict !== 'ignore') {
+            await Promise.resolve(channel.close()).catch(() => {}); // errors break channel
+            throw err;
+          }
           channel = await this.createChannel();
+          await Promise.resolve(channel.close()).catch(() => {}); // errors break channel
         }
       }
       this.prepareQueues = false;
