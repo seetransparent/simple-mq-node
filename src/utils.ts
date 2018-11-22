@@ -15,24 +15,24 @@ export async function awaitWithErrorEvents<T>(
     once(name: string, handler: Function): void,
     removeListener(name: string, handler: Function): void,
   },
-  promises: PromiseLike<T>[],
+  promise: T | PromiseLike<T>,
   errorEvents: string[] = ['error'],
-): Promise<T[]> {
-  return new Promise<T[]>((resolve, reject) => {
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
     let finished = false;
-    function callback(err?: Error | null, results: T[] = []) {
+    function callback(err?: Error | null, result?: T) {
       if (!finished) {
         finished = true;
         errorEvents.forEach(name => emitter.removeListener(name, rejection));
         if (err) reject(err);
-        else resolve(results);
+        else resolve(result);
       }
     }
     function rejection(err?: Error) {
       callback(err || new Error('Unexpected channel error'));
     }
     errorEvents.forEach(name => emitter.once(name, rejection));
-    Promise.all(promises).then(
+    Promise.resolve<T>(promise).then(
       v => callback(null, v),
       e => rejection(e),
     );

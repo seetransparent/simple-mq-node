@@ -38,7 +38,8 @@ export class AMQPConfirmChannel
     AMQPDriverConfirmChannel,
     'publish' | // overridden as async
     'checkQueue' | 'assertQueue' | 'prefetch' | // managed by constructor options
-    'once' | 'removeListener' // not an EventEmitter atm
+    'once' | 'removeListener' | // not an EventEmitter
+    'close' // renamed to disconnect
   >
 {
   protected options: AMQPConfirmChannelFullOptions;
@@ -48,7 +49,7 @@ export class AMQPConfirmChannel
   constructor(options: AMQPConfirmChannelOptions) {
     super({
       connect: () => this.prepareChannel(),
-      disconnect: con => con.close(),
+      disconnect: con => Promise.resolve(con.close()).catch(() => {}),  // ignore close errors
       retries: options.connectionRetries,
       delay: options.connectionDelay,
     });
@@ -60,9 +61,7 @@ export class AMQPConfirmChannel
   async connect(): Promise<AMQPDriverConfirmChannel> {
     // Disconnect on expired channel
     const now = Date.now();
-    if (this.expiration < now) {
-      await this.disconnect();
-    }
+    if (this.expiration < now) await this.disconnect();
     // Reconnect (if not connected)
     this.expiration = now + this.options.inactivityTime;
     return await super.connect();
@@ -89,10 +88,9 @@ export class AMQPConfirmChannel
     const connection = await this.options.manager.connect({ retries: 0 });
     try {
       const channel = await connection.createConfirmChannel();
-      channel.once('error', () => this.options.manager.disconnect());
       return channel;
     } catch (e) {
-      await this.options.manager.disconnect();  // dispose connection on error
+      await this.disconnect();  // dispose connection on error
       throw e;
     }
   }
@@ -113,7 +111,7 @@ export class AMQPConfirmChannel
         try {
           await awaitWithErrorEvents(
             channel,
-            [channel.assertQueue(name, options)],
+            channel.assertQueue(name, options),
             ['close', 'error'],
           );
         } catch (err) {
@@ -124,43 +122,22 @@ export class AMQPConfirmChannel
       }
       this.prepareQueues = false;
     }
+    // some operations cause error on channel without throwing errors
+    channel.once('error', () => this.disconnect());
+    channel.once('close', () => this.disconnect());
     return channel;
   }
 
-  async operation<T = void>(name: string, ...args: any[]): Promise<T> {
-    const channel = await this.connect();
-
-    try {
-      const func = (channel as any)[name] as Function;
-      return await Promise.resolve<T>(func.apply(channel, args));
-    } catch (e) {
-      await this.disconnect(); // errors break channel
-      throw e;
-    }
-  }
-
-  /**
-   * Alias to disconnect
-   */
-  async close(): Promise<void> {
-    return await this.disconnect();
-  }
-
-  async publishAndWaitDelivery(
-    exchange: string,
-    routingKey: string,
-    content: Buffer,
-    options?: amqp.Options.Publish,
-  ): Promise<void> {
+  async operation<T = void>(name: AMQPDriverConfirmChannel.Operation, ...args: any[]): Promise<T> {
     const channel = await this.connect();
     try {
-      await new Promise(
-        (resolve, reject) => channel.publish(
-          exchange, routingKey, content, options,
-          (err: any) => err ? reject(err) : resolve(),
-        ),
+      return await awaitWithErrorEvents<T>(
+        channel,
+        channel[name].apply(channel, args),
+        ['close', 'error'],
       );
     } catch (e) {
+      console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
       await this.disconnect(); // errors break channel
       throw e;
     }
@@ -172,7 +149,22 @@ export class AMQPConfirmChannel
     content: Buffer,
     options?: amqp.Options.Publish,
   ): Promise<boolean> {
-    return await this.operation<boolean>('publish', exchange, routingKey, content, options);
+    const channel = await this.connect();
+    try {
+      return await awaitWithErrorEvents<boolean>(
+        channel,
+        new Promise(
+          (resolve, reject) => channel.publish(
+            exchange, routingKey, content, options,
+            (err: any) => err ? reject(err) : resolve(),
+          ),
+        ),
+        ['close', 'error'],
+      );
+    } catch (e) {
+      await this.disconnect(); // errors break channel
+      throw e;
+    }
   }
 
   async deleteQueue(

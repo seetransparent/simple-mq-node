@@ -43,7 +43,7 @@ export interface AMQPOperationOptions {
 }
 
 export interface AMQPOperationPushOptions extends AMQPOperationOptions {
-  push?: { waitDelivery?: boolean } & amqp.Options.Publish;
+  push?: amqp.Options.Publish;
 }
 
 export interface AMQPOperationPullOptions extends AMQPOperationOptions {
@@ -233,7 +233,7 @@ export class AMQPConnector
                 // original error are both more important than unsubscribing
               );
           } else if (message) {
-            channel.reject(message, true).catch(() => {}); // unhandleable
+            channel.reject(message, true).catch(() => {}); // too late: unhandleable
           }
         };
 
@@ -354,15 +354,10 @@ export class AMQPConnector
       type,
       messageId,
       timestamp: Date.now(),
-      ...omit(options.push, ['waitDelivery']),
+      ...options.push,
     };
 
-    const exchange = this.options.exchange;
-    if (!options.push || options.push.waitDelivery !== false) { // default to true
-      await channel.publishAndWaitDelivery(exchange, queue, data, publishOptions);
-    } else {
-      await channel.publish(exchange, queue, data, publishOptions);
-    }
+    await channel.publish(this.options.exchange, queue, data, publishOptions);
     if (!options.channel) {
       await this.pushChannel(channel);
     }

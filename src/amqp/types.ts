@@ -1,6 +1,12 @@
 import * as events from 'events';
 import * as amqp from 'amqplib';
 
+export namespace AMQPDriverConfirmChannel {
+  export type Operation =
+    'assertQueue' | 'checkQueue' | 'deleteQueue' | 'publish' | 'get' | 'consume' |
+    'cancel' | 'prefetch' | 'ack' | 'reject';
+}
+
 export interface AMQPDriverConfirmChannel
   extends Pick<events.EventEmitter, 'once' | 'removeListener'>
 {

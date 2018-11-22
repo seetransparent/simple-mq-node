@@ -10,6 +10,7 @@ export interface ConnectionManagerOptions<T> extends ConnectOptions{
 
 export class ConnectionManager<T> {
   protected connectionPromise: PromiseLike<T>;
+  protected disconnectionPromise: PromiseLike<void>;
 
   constructor(
     protected connectionOptions: ConnectionManagerOptions<T>,
@@ -36,27 +37,40 @@ export class ConnectionManager<T> {
   }
 
   async connect(options: ConnectOptions = {}): Promise<T> {
-    if (!this.connectionPromise) {
+    // disconnecting
+    if (this.disconnectionPromise) await this.disconnectionPromise;
+
+    // already connecting/connected
+    while (this.connectionPromise) {
+      const connection = await Promise.resolve(this.connectionPromise).catch(() => {});
+      if (connection) return connection;
+    }
+
+    // new connection
+    try {
       this.connectionPromise = this.connectionAttempt({
         retries: this.connectionOptions.retries,
         delay: this.connectionOptions.delay,
         ...options,
       });
-    }
-    try {
       return await this.connectionPromise;
     } catch (e) {
-      // on error promise is no longer valid
       delete this.connectionPromise;
       throw e;
     }
   }
 
   async disconnect(): Promise<void> {
+    // disconnecting
+    if (this.disconnectionPromise) await this.disconnectionPromise;
     if (this.connectionPromise) {
-      const connection = await this.connectionPromise;
-      await this.connectionOptions.disconnect(connection);
+      const connection = await Promise.resolve(this.connectionPromise).catch(() => {});
       delete this.connectionPromise;
+
+      if (connection) {
+        this.disconnectionPromise = Promise.resolve(this.connectionOptions.disconnect(connection));
+        await this.disconnectionPromise;
+      }
     }
   }
 }

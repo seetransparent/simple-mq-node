@@ -173,6 +173,7 @@ implements AMQPDriverConfirmChannel {
   public confirm: boolean;
   public connection: AMQPMockConnection;
   protected errored: Error;
+  protected closed: boolean;
 
   constructor({
     connection,
@@ -184,19 +185,34 @@ implements AMQPDriverConfirmChannel {
     super();
     this.connection = connection;
     this.confirm = confirm;
-    this.once('error', e => this.errored = e);
+    this.closed = false;
+    this.once('error', (e) => {
+      this.errored = e;
+      if (!this.closed) this.emit('close');
+    });
+    this.once('close', () => {
+      this.closed = true;
+    });
   }
 
   wannaFail(method: string) {
+    if (this.closed) throw new Error(`operation ${method} on closed channel`);
     if (this.errored) throw this.errored;
-    if (this.failing[method]) throw this.failing[method];
-    this.connection.wannaFail(`channel.${method}`);
+    try {
+      if (this.failing[method]) throw this.failing[method];
+      this.connection.wannaFail(`channel.${method}`);
+    } catch (e) {
+      this.emit('error', e);
+      throw e;
+    }
   }
 
   async close(): Promise<void> {
     this.wannaFail('close');
     const index = this.connection.channels.indexOf(this);
     this.connection.channels.splice(index, 1);
+    this.closed = true;
+    this.emit('close');
   }
 
   async assertQueue(
@@ -269,7 +285,8 @@ implements AMQPDriverConfirmChannel {
     this.wannaFail('get');
     const q = this.connection.getQueue('', queue);
     if (q) {
-      return q.pickMessage(null, options) as amqp.GetMessage || false;
+      const message = q.pickMessage(null, options) as amqp.GetMessage;
+      if (message) return message;
     }
     // this behavior is really weird, but this is how protocol works
     this.emit('error', new Error(
