@@ -93,7 +93,7 @@ export class AMQPConfirmChannel
       } catch (e) {
         await this.disconnect();  // dispose connection on error
         if (
-          e.message.indexOf('CHANNEL_ERROR - second \'channel.open\' seen"') > -1 &&
+          e.message.indexOf('CHANNEL_ERROR - second \'channel.open\' seen') > -1 &&
           attempt < 100
         ) {
           // amqplib is buggy as hell: https://github.com/squaremo/amqp.node/issues/441
