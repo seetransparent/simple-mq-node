@@ -13,6 +13,7 @@ describe('amqp', () => {
           connectionRetries: 1,
           connectionDelay: 0,
           connect() {
+            console.log('LLAMADA', attempt);
             attempt += 1;
             if (attempt % 2) throw new Error('Patatita connection error');
             return connection;

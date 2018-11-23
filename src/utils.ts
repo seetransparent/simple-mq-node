@@ -1,5 +1,37 @@
 import { AnyObject } from './types';
 
+export type PromiseAccumulatorResult<T> = T | undefined;
+
+export type PromiseAccumulatorPromiseLike<T> =
+  PromiseLike<PromiseAccumulatorResult<T>>
+  | PromiseAccumulatorResult<T>;
+
+export class PromiseAccumulator<T = any> implements PromiseLike<PromiseAccumulatorResult<T>[]> {
+  constructor(protected promises: PromiseAccumulatorPromiseLike<T>[] = []) {}
+
+  push(...promises: PromiseAccumulatorPromiseLike<T>[]) {
+    this.promises.push(...promises);
+    return this;
+  }
+
+  unconditionally(...promises: PromiseAccumulatorPromiseLike<T>[]) {
+    this.push(
+      ...promises.map(x => Promise.resolve(x).catch(() => undefined)),
+    );
+    return this;
+  }
+
+  then<
+    TResolve = PromiseAccumulatorResult<T>[],
+    TReject = TResolve
+  >(
+    onresolve?: (value: PromiseAccumulatorResult<T>[]) => (PromiseLike<TResolve> | TResolve),
+    onreject?: (reason: any) => (PromiseLike<TReject> | TReject),
+  ): PromiseLike<TResolve | TReject> {
+    return Promise.all(this.promises).then(onresolve, onreject);
+  }
+}
+
 export function omit<T extends { [prop: string]: any } = {}, V = T>(
   obj: T | undefined, properties: string[],
 ): V {

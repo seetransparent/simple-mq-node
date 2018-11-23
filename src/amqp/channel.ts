@@ -1,6 +1,6 @@
 import * as amqp from 'amqplib';
 
-import { ConnectionManager } from '../base';
+import { ConnectionManager, ConnectOptions } from '../base';
 import { AMQPDriverConnection, AMQPDriverConfirmChannel, Omit } from './types';
 import { awaitWithErrorEvents } from '../utils';
 
@@ -48,8 +48,8 @@ export class AMQPConfirmChannel
 
   constructor(options: AMQPConfirmChannelOptions) {
     super({
-      connect: () => this.prepareChannel(),
-      disconnect: con => Promise.resolve(con.close()).catch(() => {}),  // ignore close errors
+      connect: () => this.options.manager.connect().then(c => c.createConfirmChannel()),
+      disconnect: c => Promise.resolve(c.close()).catch(() => {}), // ignore close errors
       retries: options.connectionRetries,
       delay: options.connectionDelay,
     });
@@ -58,13 +58,61 @@ export class AMQPConfirmChannel
     this.expiration = 0;
   }
 
-  async connect(): Promise<AMQPDriverConfirmChannel> {
+  /**
+   * Create and initialize channel with queues from config
+   */
+  async connect(options: ConnectOptions = {}): Promise<AMQPDriverConfirmChannel> {
     // Disconnect on expired channel
     const now = Date.now();
+    let channel: AMQPDriverConfirmChannel | undefined;
+
     if (this.expiration < now) await this.disconnect();
-    // Reconnect (if not connected)
+
+    // force channel retrieval for known errors
+    while (!channel) {
+      try {
+        channel = await super.connect(options);
+      } catch (e) {
+        if (e.message.indexOf('CHANNEL_ERROR - second \'channel.open\' seen') > -1) {
+          // amqplib is buggy as hell: https://github.com/squaremo/amqp.node/issues/441
+          continue;
+        }
+        throw e;
+      }
+    }
+
     this.expiration = now + this.options.inactivityTime;
-    return await super.connect();
+    try {
+      if (this.options.prefetch) {
+        await channel.prefetch(this.options.prefetch);
+      }
+      if (this.prepareQueues) {
+        for (const name of this.options.check) {
+          await channel.checkQueue(name);
+        }
+        for (const [name, assertion] of Object.entries(this.options.assert)) {
+          try {
+            await awaitWithErrorEvents(
+              channel,
+              channel.assertQueue(name, assertion),
+              ['close', 'error'],
+            );
+          } catch (err) {
+            if (assertion.conflict !== 'ignore') throw err;
+            await this.disconnect();
+            channel = await super.connect(options);
+          }
+        }
+        this.prepareQueues = false;
+      }
+      // some operations cause error on channel without throwing errors
+      // channel.once('error', () => this.disconnect());
+      // channel.once('close', () => this.disconnect());
+      return channel;
+    } catch (e) {
+      await this.disconnect();
+      throw e;
+    }
   }
 
   /**
@@ -81,78 +129,23 @@ export class AMQPConfirmChannel
     return this.options.channelId || null;
   }
 
-  /**
-   * Create (uninitialized) channel
-   */
-  protected async createChannel(): Promise<AMQPDriverConfirmChannel> {
-    const connection = await this.options.manager.connect({ retries: 0 });
-    let attempt = 0;
-    while (true) {
-      try {
-        return await connection.createConfirmChannel();
-      } catch (e) {
-        await this.disconnect();  // dispose connection on error
-        if (
-          e.message.indexOf('CHANNEL_ERROR - second \'channel.open\' seen') > -1 &&
-          attempt < 100
-        ) {
-          // amqplib is buggy as hell: https://github.com/squaremo/amqp.node/issues/441
-          await new Promise(r => setTimeout(r, 100));
-          attempt += 1;
-          continue;
-        }
-        throw e;
-      }
-    }
-  }
-
-  /**
-   * Create and initialize channel with queues from config
-   */
-  protected async prepareChannel(): Promise<AMQPDriverConfirmChannel> {
-    let channel = await this.createChannel();
-    if (this.options.prefetch) {
-      await channel.prefetch(this.options.prefetch);
-    }
-    if (this.prepareQueues) {
-      for (const name of this.options.check) {
-        await channel.checkQueue(name);
-      }
-      for (const [name, options] of Object.entries(this.options.assert)) {
-        try {
-          await awaitWithErrorEvents(
-            channel,
-            channel.assertQueue(name, options),
-            ['close', 'error'],
-          );
-        } catch (err) {
-          if (options.conflict !== 'ignore') {
-            await Promise.resolve(channel.close()).catch(() => {}); // errors break channel
-            throw err;
-          }
-          channel = await this.createChannel();
-          await Promise.resolve(channel.close()).catch(() => {}); // errors break channel
-        }
-      }
-      this.prepareQueues = false;
-    }
-    // some operations cause error on channel without throwing errors
-    channel.once('error', () => this.disconnect());
-    channel.once('close', () => this.disconnect());
-    return channel;
+  protected discardChannel(channel: AMQPDriverConfirmChannel, e?: Error) {
+    this.ban(); // TODO: better handling
   }
 
   async operation<T = void>(name: AMQPDriverConfirmChannel.Operation, ...args: any[]): Promise<T> {
     const channel = await this.connect();
     try {
-      return await awaitWithErrorEvents<T>(
+      const result = await awaitWithErrorEvents<T>(
         channel,
         channel[name].apply(channel, args),
         ['close', 'error'],
       );
+      if (name === 'get' && !result) this.discardChannel(channel); // amqplib bug workaround
+      return result;
     } catch (e) {
       console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
-      await this.disconnect(); // errors break channel
+      this.discardChannel(channel, e); // errors break channel
       throw e;
     }
   }
@@ -176,7 +169,7 @@ export class AMQPConfirmChannel
         ['close', 'error'],
       );
     } catch (e) {
-      await this.disconnect(); // errors break channel
+      this.discardChannel(channel, e); // errors break channel
       throw e;
     }
   }

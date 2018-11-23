@@ -2,7 +2,7 @@ import * as amqp from 'amqplib';
 import * as uuid4 from 'uuid/v4';
 
 import { MessageQueueConnector } from '../types';
-import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
+import { ConnectionManager, ConnectionManagerOptions } from '../base';
 import { TimeoutError, PullError } from '../errors';
 import { omit, objectKey, adler32 } from '../utils';
 
@@ -85,10 +85,6 @@ export class AMQPConnector
     this.uuidName = this.options.name || this.constructor.name;
     this.uuidNamespace = uuid4();
     this.appId = this.genId('app', this.uuidName, this.uuidNamespace);
-  }
-
-  async connect(options?: ConnectOptions): Promise<AMQPDriverConnection> {
-    return await super.connect(options);
   }
 
   protected genId(name: string, type?: string | null, uuid?: string | null) {
