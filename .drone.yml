@@ -11,6 +11,3 @@ pipeline:
       - npm install
       - npm run build-test
       - npm run test
-    secrets:
-      - ssh_key
-      - deploy_login_password
