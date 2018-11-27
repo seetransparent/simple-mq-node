@@ -84,3 +84,28 @@ async function main () {
   await connector.dispose('test-queue');
 }
 ```
+
+## Setup a channel and use it manually (AMQP-specific)
+
+```typescript
+import { AMQPConnector } from 'simple-mq-node';
+
+async function main () {
+  const connector = AMQPConnector({
+    uri: 'amqp://localhost',
+  });
+  const channel = await connector.channel({
+    assert: {
+      'my-queue': {
+        conflict: 'ignore',
+        durable: true,
+      },
+    },
+  })
+  try {
+    await connector.dispose('my-queue', { channel });
+  } finally {
+    await channel.disconnect();
+  }
+}
+```
