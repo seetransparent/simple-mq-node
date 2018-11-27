@@ -69,7 +69,7 @@ export class ConnectionManager<T> {
       for (let retry = -1; retry < retries; retry += 1) {
         try {
           this.connection = await connect();
-          if (!this.bannedConnections.has(this.connection)) {
+          if (this.bannedConnections.has(this.connection)) {
             promises.unconditionally(this.banConnection(this.connection)); // update ban, wait later
             continue; // do not delay
           }
