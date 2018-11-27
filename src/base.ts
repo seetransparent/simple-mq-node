@@ -1,14 +1,18 @@
 import { AnyObject } from './types';
 import { PromiseAccumulator } from './utils';
 
+const bannedConnectionsByConstructor: Map<Function, Set<any>> = new Map();
+
 export interface ConnectOptions {
   retries?: number;
   delay?: number;
+  banPeriod?: number;
 }
 
 interface FullConnectOptions extends ConnectOptions {
   retries: number;
   delay: number;
+  banPeriod: number;
 }
 
 export interface ConnectionManagerOptions<T> extends ConnectOptions {
@@ -27,7 +31,6 @@ export class ConnectionManager<T> {
   protected connectionOptions: ConnectionManagerOptions<T>;
   protected connectionStatus: ConnectionStatus = ConnectionStatus.Disconnected;
   protected connectionChange: Promise<void>;
-  protected connectionBanned: Set<T> = new Set();
   protected connection: T;
 
   constructor(
@@ -36,11 +39,22 @@ export class ConnectionManager<T> {
     this.connectionOptions = this.withConnectionDefaults(options);
   }
 
+  get bannedConnections (): Set<T> {
+    let bannedConnections = bannedConnectionsByConstructor.get(this.constructor);
+    if (!bannedConnections) {
+      bannedConnections = new Set<T>();
+      bannedConnectionsByConstructor.set(this.constructor, bannedConnections);
+    }
+    return bannedConnections;
+  }
+
   protected withConnectionDefaults<T extends AnyObject>(options: T): FullConnectOptions & T {
+    const delay = Number.isFinite(options.delay as number) ? options.delay || 0 : 100;
     return {
       ...(options as any),
+      delay,
       retries: Math.max(options.retries || 0, -1),
-      delay: Number.isFinite(options.delay as number) ? options.delay || 0 : 1000,
+      banPeriod: Math.max(options.banPeriod || 5000, 0),
     };
   }
 
@@ -55,7 +69,7 @@ export class ConnectionManager<T> {
       for (let retry = -1; retry < retries; retry += 1) {
         try {
           this.connection = await connect();
-          if (this.connectionBanned.has(this.connection)) {
+          if (!this.bannedConnections.has(this.connection)) {
             promises.unconditionally(this.banConnection(this.connection)); // update ban, wait later
             continue; // do not delay
           }
@@ -72,15 +86,24 @@ export class ConnectionManager<T> {
   }
 
   protected banConnection(connection: T, options: ConnectOptions = {}) {
-    const { delay, disconnect } = this.withConnectionDefaults({
+    const { delay, disconnect, banPeriod } = this.withConnectionDefaults({
       ...this.connectionOptions,
       ...options,
     });
-    this.connectionBanned.add(connection);
+
+    const banned = this.bannedConnections;
+    const alreadyBanned = banned.has(this.connection);
+    if (!alreadyBanned) banned.add(connection);
+
     return new Promise(r => setTimeout(r, delay))
       .then(() => disconnect(connection))
-      .catch(() => {}) // TODO: handling
-      .then(() => {}); // ensure void
+      .catch(() => {}) // TODO: optional logging
+      .then(() => {
+        if (!alreadyBanned) {
+          // un-banning
+          setTimeout(() => banned.delete(connection), banPeriod);
+        }
+      });
   }
 
   connect(options: ConnectOptions = {}): Promise<T> {
@@ -145,7 +168,7 @@ export class ConnectionManager<T> {
       this.connectionStatus = ConnectionStatus.Disconnecting;
       return this.connectionChange = Promise
         .resolve(this.connectionOptions.disconnect(this.connection))
-        .catch(() => {}) // TODO: handling
+        .catch(() => {}) // TODO: logging
         .then(() => {
           this.connectionStatus = ConnectionStatus.Disconnected;
         });
