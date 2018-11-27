@@ -173,6 +173,9 @@ describe('amqp', () => {
           .resolves.toMatchObject({ content: Buffer.from('ok') });
 
         await connector.disconnect();
+
+        expect(console.warn).toHaveBeenCalled();
+        console.warn = consoleWarn;
       });
     });
 
