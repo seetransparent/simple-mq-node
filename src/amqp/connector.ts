@@ -1,5 +1,6 @@
 import * as amqp from 'amqplib';
 import * as uuid4 from 'uuid/v4';
+import * as LRUCache from 'lru-cache';
 
 import { MessageQueueConnector } from '../types';
 import { ConnectionManager, ConnectionManagerOptions } from '../base';
@@ -18,6 +19,7 @@ export interface AMQPConnectorOptions {
   timeout?: number;
   connectionRetries?: number;
   connectionDelay?: number;
+  channelCacheSize?: number;
 }
 
 interface AMQPConnectorFullOptions
@@ -28,6 +30,7 @@ interface AMQPConnectorFullOptions
   exchange: string;
   uri: string;
   timeout: number;
+  channelCacheSize: number;
 }
 
 interface CheckOptions extends Pick<amqp.MessageProperties, 'correlationId' | 'type'> {}
@@ -63,6 +66,9 @@ export class AMQPConnector
   protected options: AMQPConnectorFullOptions;
   protected appId: string;
 
+  protected channelsById: LRUCache.Cache<string | null, AMQPConfirmChannel>;
+  protected channelsByType: LRUCache.Cache<string | null, Set<AMQPConfirmChannel>>;
+
   constructor(options: AMQPConnectorOptions) {
     const opts: AMQPConnectorFullOptions = {
       connect: () => amqp.connect(opts.uri),
@@ -73,6 +79,7 @@ export class AMQPConnector
       timeout: 5000,
       connectionRetries: 10,
       connectionDelay: 1000,
+      channelCacheSize: 100,
       ...options,
     };
     super({
@@ -85,6 +92,39 @@ export class AMQPConnector
     this.uuidName = this.options.name || this.constructor.name;
     this.uuidNamespace = uuid4();
     this.appId = this.genId('app', this.uuidName, this.uuidNamespace);
+
+    this.channelsById = new LRUCache({
+      max: opts.channelCacheSize,
+      noDisposeOnSet: true,
+      dispose: (_, channel) => {
+        const { channelType } = channel;
+        const channelsOfType = this.channelsByType.get(channelType);
+        if (channelsOfType) {
+          // deleting first to prevent race condition
+          channelsOfType.delete(channel);
+          if (!channelsOfType.size) this.channelsByType.del(channelType);
+        }
+        channel.disconnect();
+      },
+    });
+    this.channelsByType = new LRUCache({
+      max: opts.channelCacheSize,
+      noDisposeOnSet: true,
+      dispose: (_, channelsOfType) => {
+        for (const channel of channelsOfType) {
+          // deferred sync to prevent race condition
+          process.nextTick(() => this.channelsById.del(channel.channelId));
+          channel.disconnect();
+        }
+      },
+    });
+  }
+
+  disconnect(): Promise<void> {
+    const promise = super.disconnect();
+    this.channelsById.reset();
+    this.channelsByType.reset();
+    return promise;
   }
 
   protected genId(name: string, type?: string | null, uuid?: string | null) {
@@ -321,6 +361,20 @@ export class AMQPConnector
     options: AMQPOperationChannelOptions = {},
   ): Promise<AMQPConfirmChannel> {
     const channelType = options.channelType || adler32(objectKey(options)).toString(16);
+
+    // pop from cache
+    const channelsOfType = this.channelsByType.get(channelType);
+    if (channelsOfType) {
+      const [channel] = channelsOfType;
+      if (channel) {
+        if (channelsOfType.size === 1) this.channelsByType.del(channelType);
+        else channelsOfType.delete(channel);
+        this.channelsById.del(channel.channelId);
+        return channel;
+      }
+    }
+
+    // create new
     const channelId = options.channelId || this.genId('channelId', channelType);
     return await this.channel({ channelType, channelId, ...options });
   }
@@ -330,7 +384,17 @@ export class AMQPConnector
    * @param channel
    */
   protected async pushChannel(channel: AMQPConfirmChannel): Promise<void> {
-    await channel.disconnect();
+    if (channel.channelId && channel.channelType) {
+      // cache this channel
+      const { channelId, channelType } = channel;
+      const channelsOfType = this.channelsByType.get(channelType);
+      if (channelsOfType) channelsOfType.add(channel);
+      else this.channelsByType.set(channelType, new Set([channel]));
+      this.channelsById.set(channelId, channel);
+    } else {
+      // uncacheable, disconnect
+      await channel.disconnect();
+    }
   }
 
   /**

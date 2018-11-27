@@ -49,6 +49,22 @@ describe('amqp', () => {
         expect(() => connection.getQueue('', 'q')).toThrow('queue q does not exist');
         expect(attempt).toBe(4);
       });
+
+      it('does not retry assertQueue indefinitely', async () => {
+        const connection = new mock.AMQPMockConnection();
+        connection.failing.assertQueue = new Error('Patatita queue assertion error');
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connectionRetries: 3,
+          connectionDelay: 0,
+          connect: () => connection,
+        });
+        const content = Buffer.from('test');
+        await connector.push('q', 'msg', content);
+        const messages = connection.getQueue('', 'q').messages;
+        expect(messages).toHaveLength(1);
+        await expect(connector.pull('q', null)).resolves.toMatchObject({ content });
+      });
     });
 
     describe('push', () => {
@@ -120,6 +136,10 @@ describe('amqp', () => {
         connection.addMessage('', queue, Buffer.from('ok'), { type: 'patata' });
 
         const options = { timeout: 100 };
+
+        const consoleWarn = console.warn;
+        console.warn = jest.fn();
+
         await expect(connector.pull(queue, 'patatita', options))
           .rejects.toBeInstanceOf(errors.TimeoutError);
 
@@ -127,9 +147,13 @@ describe('amqp', () => {
           .resolves.toMatchObject({ content: Buffer.from('ok') });
 
         await connector.disconnect();
+
+        expect(console.warn).toHaveBeenCalled();
+        console.warn = consoleWarn;
       });
 
       it('honors correlationId filter and timeout', async () => {
+
         const queue = 'test';
         const connection = new mock.AMQPMockConnection();
         const connector = new lib.AMQPConnector({ name: 'test', connect: () => connection });
@@ -137,6 +161,10 @@ describe('amqp', () => {
 
         const options = { timeout: 100 };
         const rejOptions = { ...options, pull: { correlationId: 'patatita' } };
+
+        const consoleWarn = console.warn;
+        console.warn = jest.fn();
+
         await expect(connector.pull(queue, null, rejOptions))
           .rejects.toBeInstanceOf(errors.TimeoutError);
 
@@ -196,6 +224,20 @@ describe('amqp', () => {
         } finally {
           await connector.disconnect();
         }
+      });
+    });
+
+    describe('cache', () => {
+      it('reuses channels based on config', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({ name: 'test', connect: () => connection });
+        await connector.push('q', 'msg', Buffer.from('test'));
+        await connector.push('q', 'msg', Buffer.from('test'));
+        await connector.push('q', 'msg', Buffer.from('test'));
+        await connector.push('q', 'msg', Buffer.from('test'));
+        expect(connection.channels).toHaveLength(1);
+        await connector.push('w', 'msg', Buffer.from('test'));
+        expect(connection.channels).toHaveLength(2);
       });
     });
   });
