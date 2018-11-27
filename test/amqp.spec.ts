@@ -134,8 +134,9 @@ describe('amqp', () => {
         const connection = new mock.AMQPMockConnection();
         const connector = new lib.AMQPConnector({ name: 'test', connect: () => connection });
         connection.addMessage('', queue, Buffer.from('ok'), { type: 'patata' });
+        connection.addMessage('', queue, Buffer.from('other'), { type: 'pataton' });
 
-        const options = { timeout: 100 };
+        const options = { timeout: 10 };
 
         const consoleWarn = console.warn;
         console.warn = jest.fn();
@@ -145,6 +146,9 @@ describe('amqp', () => {
 
         await expect(connector.pull(queue, 'patata', options))
           .resolves.toMatchObject({ content: Buffer.from('ok') });
+
+        await expect(connector.pull(queue, null, options))
+          .resolves.toMatchObject({ content: Buffer.from('other') });
 
         await connector.disconnect();
 
