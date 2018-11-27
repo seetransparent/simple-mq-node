@@ -239,6 +239,23 @@ describe('amqp', () => {
         await connector.push('w', 'msg', Buffer.from('test'));
         expect(connection.channels).toHaveLength(2);
       });
+
+      it('expires old caches (honoring maxCacheSize)', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          channelCacheSize: 3,
+          connect: () => connection,
+        });
+        await connector.push('a', 'msg', Buffer.from('test'));
+        await connector.push('b', 'msg', Buffer.from('test'));
+        await connector.push('c', 'msg', Buffer.from('test'));
+        await connector.push('d', 'msg', Buffer.from('test'));
+        await connector.push('e', 'msg', Buffer.from('test'));
+        expect(connection.createdChannels).toBe(5);
+        expect(connection.closedChannels).toBe(2);  // not very
+        expect(connection.channels).toHaveLength(3);
+      });
     });
   });
 });

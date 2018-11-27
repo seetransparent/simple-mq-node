@@ -90,6 +90,8 @@ extends AMQPMockBase
 implements AMQPDriverConnection {
   public queues: { [name: string]: AMQPMockQueue } = {};
   public channels: AMQPMockChannel[] = [];
+  public createdChannels: number = 0;
+  public closedChannels: number = 0;
 
   wannaFail(method: string) {
     if (this.failing[method]) throw this.failing[method];
@@ -103,6 +105,7 @@ implements AMQPDriverConnection {
     this.wannaFail('createConfirmChannel');
     const channel = new AMQPMockChannel({ connection: this, confirm: true });
     this.channels.push(channel);
+    this.createdChannels += 1;
     return channel;
   }
 
@@ -211,6 +214,7 @@ implements AMQPDriverConfirmChannel {
     this.wannaFail('close');
     const index = this.connection.channels.indexOf(this);
     this.connection.channels.splice(index, 1);
+    this.connection.closedChannels += 1;
     this.closed = true;
     this.emit('close');
   }
