@@ -164,7 +164,11 @@ export class AMQPConnector
         }
 
         if (received.has(message.properties.messageId)) {
-          throw new DuplicatedMessage(`Duplicated message ${message.properties.messageId}`);
+          throw new DuplicatedMessage(
+            `Unwanted message ${message.properties.messageId}`
+            + (message.properties.type ? ` (${message.properties.type})` : '')
+            + ` found twice on ${queue}`,
+          );
         }
 
         received.add(message.properties.messageId);
@@ -203,7 +207,11 @@ export class AMQPConnector
               if (received.has(message.properties.messageId)) {
                 promises.push(channel.reject(message, true)); // requeue
                 return callback(
-                  new DuplicatedMessage(`Duplicated message ${message.properties.messageId}`),
+                  new DuplicatedMessage(
+                    `Unwanted message ${message.properties.messageId}`
+                    + (message.properties.type ? ` (${message.properties.type})` : '')
+                    + ` found twice on ${queue}`,
+                  ),
                 );
               }
               if (!this.checkMessage(message, checkOptions)) {
@@ -419,8 +427,14 @@ export class AMQPConnector
         }
       } catch (e) {
         if (e instanceof DuplicatedMessage) {
-          const timeout = Math.min((cancelAt - Date.now()) / 2, 100);
-          return await this.pull(queue, type, { ...options, channel, timeout });
+          const now = Date.now();
+          if (cancelAt > now) {
+            console.warn(e);
+            const timeout = cancelAt - now;
+            await new Promise(r => setTimeout(r, Math.min(timeout, 100)));
+            return await this.pull(queue, type, { ...options, timeout });
+          }
+          throw new TimeoutError('Timeout reached');
         }
         throw e;
       }

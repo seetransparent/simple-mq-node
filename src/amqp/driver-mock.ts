@@ -147,7 +147,7 @@ implements AMQPDriverConnection {
         redelivered: false,
       } as any as amqp.Message['fields'],  // required as definition is wrong
       properties: {
-        messageId: undefined,
+        messageId: `messageId:${uuid4()}`,
         type: undefined,
         userId: undefined,
         appId: undefined,
