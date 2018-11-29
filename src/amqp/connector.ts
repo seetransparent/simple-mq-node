@@ -463,7 +463,7 @@ export class AMQPConnector
       cancelAt,
       checkOptions: {
         type,
-        correlationId: options && options.pull ? options.pull.correlationId : undefined,
+        correlationId: (options && options.pull) ? options.pull.correlationId : undefined,
       },
     };
 
