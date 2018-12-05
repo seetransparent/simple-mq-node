@@ -609,15 +609,18 @@ export class AMQPConnector
     const channelPush = (options.channels ? options.channels.push : null)
       || await this.pullChannel();
 
-    const pullOptions = {
+    const pullOptions: AMQPOperationPullOptions = {
       channel: channelPull,
-      ...options,
+      ...omit(options, ['push', 'channels']) as Omit<
+        AMQPOperationConsumeOptions,
+        'push' | 'channels'
+      >,
       pull: {
         ...options.pull,
         autoAck: false,
       },
     };
-    const pushOptions = {
+    const pushOptions: AMQPOperationPushOptions = {
       channel: channelPush,
       ...omit(options, ['pull', 'channels']) as Omit<
         AMQPOperationConsumeOptions,
