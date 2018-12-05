@@ -1,6 +1,7 @@
 import * as lib from '../src/main';
 import * as errors from '../src/errors';
 import * as mock from '../src/amqp/driver-mock';
+import { AnyObject } from '../src/types';
 
 describe('amqp', () => {
   describe('AMQPConnector', () => {
@@ -234,6 +235,44 @@ describe('amqp', () => {
       });
     });
 
+    describe('consume', () => {
+      it('should counsume a meesage from rpc and return a value', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const connectorRPC = new lib.AMQPConnector({
+          name: 'test-rpc',
+          connect: () => connection,
+        });
+        const connectorConsume = new lib.AMQPConnector({
+          name: 'test-consume',
+          connect: () => connection,
+        });
+        try {
+          const results: AnyObject[] = [];
+          const queue = 'consume-queue';
+
+          const consume = connectorConsume.consume(queue, 'type', (message) => {
+            const data = JSON.parse(message.content.toString());
+            results.push(data);
+            return {
+              content: Buffer.from(JSON.stringify({ ok: true, id: data.id })),
+              break: results.length > 1,
+            };
+          });
+
+          await connectorRPC.rpc(queue, 'type', Buffer.from(JSON.stringify({ id: 1 })));
+          await connectorRPC.rpc(queue, 'type', Buffer.from(JSON.stringify({ id: 2 })));
+
+          await expect(consume).resolves.toBeUndefined();
+
+          expect(results.length).toBe(2);
+          expect(results).toMatchObject([{ id: 1 }, { id: 2 }]);
+        } finally {
+          await connectorRPC.disconnect();
+          await connectorConsume.disconnect();
+        }
+      });
+    });
+
     describe('cache', () => {
       it('reuses channels based on config', async () => {
         const connection = new mock.AMQPMockConnection();
@@ -262,6 +301,15 @@ describe('amqp', () => {
         expect(connection.createdChannels).toBe(5);
         expect(connection.closedChannels).toBe(2);  // not very
         expect(connection.channels).toHaveLength(3);
+      });
+    });
+
+    describe('ping', () => {
+      it('should ping', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({ name: 'test', connect: () => connection });
+
+        await expect(connector.ping()).resolves.toBeUndefined();
       });
     });
   });

@@ -2,7 +2,7 @@ import * as amqp from 'amqplib';
 import * as uuid4 from 'uuid/v4';
 import * as LRUCache from 'lru-cache';
 
-import { MessageQueueConnector } from '../types';
+import { MessageQueueConnector, ResultMessage } from '../types';
 import { ConnectionManager, ConnectionManagerOptions } from '../base';
 import { TimeoutError, PullError } from '../errors';
 import { omit, objectKey, adler32 } from '../utils';
@@ -24,8 +24,8 @@ export interface AMQPConnectorOptions {
 
 interface AMQPConnectorFullOptions
   extends
-    Omit<AMQPConnectorOptions, 'connect' | 'disconnect'>,
-    Pick<ConnectionManagerOptions<AMQPDriverConnection>, 'connect' | 'disconnect'>
+  Omit<AMQPConnectorOptions, 'connect' | 'disconnect'>,
+  Pick<ConnectionManagerOptions<AMQPDriverConnection>, 'connect' | 'disconnect'>
 {
   exchange: string;
   uri: string;
@@ -33,12 +33,12 @@ interface AMQPConnectorFullOptions
   channelCacheSize: number;
 }
 
-interface CheckOptions extends Pick<amqp.MessageProperties, 'correlationId' | 'type'> {}
+interface CheckOptions extends Pick<amqp.MessageProperties, 'correlationId' | 'type'> { }
 
-class DuplicatedMessage extends Error {}
+class DuplicatedMessage extends Error { }
 
 export interface AMQPOperationChannelOptions
-  extends Omit<AMQPConfirmChannelOptions, 'manager'> {}
+  extends Omit<AMQPConfirmChannelOptions, 'manager'> { }
 
 export interface AMQPOperationOptions {
   timeout?: number;
@@ -53,9 +53,16 @@ export interface AMQPOperationPullOptions extends AMQPOperationOptions {
   pull?: { correlationId?: string, autoAck?: boolean } & amqp.Options.Consume;
 }
 export interface AMQPOperationRPCOptions
-  extends AMQPOperationPushOptions, AMQPOperationPullOptions {}
+  extends AMQPOperationPushOptions, AMQPOperationPullOptions { }
 
-export interface AMQPOperationDisposeOptions extends AMQPOperationOptions {}
+export interface AMQPOperationDisposeOptions extends AMQPOperationOptions { }
+
+export interface AMQPOperationConsumeOptions
+    extends Omit<AMQPOperationPushOptions & AMQPOperationPullOptions, 'channel'> {
+  channels?: { pull: AMQPConfirmChannel, push: AMQPConfirmChannel };
+}
+
+export interface AMQPResultMessage extends ResultMessage<Buffer, AMQPOperationPushOptions> { }
 
 export class AMQPConnector
   extends ConnectionManager<AMQPDriverConnection>
@@ -277,7 +284,7 @@ export class AMQPConnector
                 // original error are both more important than unsubscribing
               );
           } else if (message) {
-            channel.reject(message, true).catch(() => {}); // too late: unhandleable
+            channel.reject(message, true).catch(() => { }); // too late: unhandleable
           }
         };
 
@@ -405,7 +412,7 @@ export class AMQPConnector
    * @param data message buffer
    * @param options
    */
-  async push(queue: string, type: string, data: Buffer, options: AMQPOperationPushOptions = {}) {
+  async push(queue: string, type: string, content: Buffer, options: AMQPOperationPushOptions = {}) {
     const appId = this.appId;
     const messageId = this.messageId(type, options);
     const channel = options.channel || await this.pullChannel({
@@ -425,7 +432,7 @@ export class AMQPConnector
       ...options.push,
     };
 
-    await channel.publish(this.options.exchange, queue, data, publishOptions);
+    await channel.publish(this.options.exchange, queue, content, publishOptions);
     if (!options.channel) {
       await this.pushChannel(channel);
     }
@@ -526,7 +533,7 @@ export class AMQPConnector
   async rpc(
     queue: string,
     type: string,
-    data: Buffer,
+    content: Buffer,
     options: AMQPOperationRPCOptions = {},
   ): Promise<amqp.Message> {
     const correlationId = this.correlationId(type, options);
@@ -567,7 +574,7 @@ export class AMQPConnector
     };
     try {
       try {
-        await this.push(queue, type, data, pushOptions);
+        await this.push(queue, type, content, pushOptions);
         return await this.pull(responseQueue, null, pullOptions);
       } finally {
         await this.dispose(responseQueue, { channel });
@@ -576,6 +583,88 @@ export class AMQPConnector
       if (!options.channel) {
         await this.pushChannel(channel);
       }
+    }
+  }
+
+  /**
+   * Listen for messages in a queue.
+   */
+  async consume(queue: string,
+                type: string,
+                handler: (message: amqp.Message) =>
+                  (AMQPResultMessage | Promise<AMQPResultMessage> | null),
+                options: AMQPOperationConsumeOptions = {}): Promise<void> {
+    const autoAck = !options.pull || options.pull.autoAck !== false; // default to true
+    const channelPull = (options.channels ? options.channels.pull : null)
+      || await this.pullChannel({
+        assert: {
+          // ensure queue is available
+          [queue]: {
+            conflict: 'ignore',
+            durable: true,
+          },
+        },
+        prefetch: 1,
+      });
+    const channelPush = (options.channels ? options.channels.push : null)
+      || await this.pullChannel();
+
+    const pullOptions = {
+      channel: channelPull,
+      ...options,
+      pull: {
+        ...options.pull,
+        autoAck: false,
+      },
+    };
+    const pushOptions = {
+      channel: channelPush,
+      ...omit(options, ['pull', 'channels']) as Omit<
+        AMQPOperationConsumeOptions,
+        'pull' | 'channels'
+      >,
+    };
+    let exit = false;
+
+    try {
+      do {
+        let message: amqp.Message | undefined;
+        try {
+          message = await this.pull(queue, type, pullOptions);
+          const response = await handler(message);
+
+          if (!response) {
+            if (autoAck) await channelPull.ack(message);
+            continue;
+          }
+          exit = !!response.break;
+
+          await this.push(
+            response.queue || message.properties.replyTo,
+            response.type || '',
+            response.content,
+            {
+              ...pushOptions,
+              ...response.options,
+              push: {
+                correlationId: message.properties.correlationId,
+                replyTo: message.properties.replyTo,
+                ...pushOptions.push,
+                ...(response.options || {}).push,
+              },
+            },
+          );
+          if (autoAck) await channelPull.ack(message);
+        } catch (e) {
+          if (message) await channelPull.reject(message, true).catch(() => {});
+          throw e;
+        }
+      } while (!exit);
+    } finally {
+      await Promise.all([
+        (!options.channels || !options.channels.pull) ? this.pushChannel(channelPull) : undefined,
+        (!options.channels || !options.channels.push) ? this.pushChannel(channelPush) : undefined,
+      ]);
     }
   }
 
