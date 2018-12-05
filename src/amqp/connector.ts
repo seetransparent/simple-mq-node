@@ -590,7 +590,7 @@ export class AMQPConnector
    * Listen for messages in a queue.
    */
   async consume(queue: string,
-                type: string,
+                type: string | null | undefined,
                 handler: (message: amqp.Message) =>
                   (AMQPResultMessage | Promise<AMQPResultMessage> | null),
                 options: AMQPOperationConsumeOptions = {}): Promise<void> {

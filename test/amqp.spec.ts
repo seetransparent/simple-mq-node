@@ -70,7 +70,7 @@ describe('amqp', () => {
 
     describe('push', () => {
       it('pushes messages to queue', async () => {
-        const connection = new mock.AMQPMockConnection();
+        const connection = new mock.AMQPMockConnection({ slow: true });
         const connector = new lib.AMQPConnector({ name: 'test', connect: () => connection });
         try {
           await connector.push('q', 'msg', Buffer.from('test'));
@@ -188,7 +188,7 @@ describe('amqp', () => {
       it('consumer ready', async () => {
         const connector = new lib.AMQPConnector({
           name: 'test',
-          connect: () => new mock.AMQPMockConnection(),
+          connect: () => new mock.AMQPMockConnection({ slow: true }),
         });
         try {
           const queue = 'rpc-queue';
@@ -214,7 +214,7 @@ describe('amqp', () => {
       it('consumer late', async () => {
         const connector = new lib.AMQPConnector({
           name: 'test',
-          connect: () => new mock.AMQPMockConnection(),
+          connect: () => new mock.AMQPMockConnection({ slow: true }),
         });
         try {
           const queue = 'rpc-queue';

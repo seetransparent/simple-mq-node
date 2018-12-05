@@ -92,6 +92,12 @@ implements AMQPDriverConnection {
   public channels: AMQPMockChannel[] = [];
   public createdChannels: number = 0;
   public closedChannels: number = 0;
+  public slow: boolean = true;
+
+  constructor(options: { slow?: boolean } = {}) {
+    super();
+    this.slow = options.slow !== false;
+  }
 
   wannaFail(method: string) {
     if (this.failing[method]) throw this.failing[method];
@@ -262,7 +268,10 @@ implements AMQPDriverConfirmChannel {
     this.connection.addMessage(exchange, routingKey, content, options);
     this.emit('drain');
     if (callback) {
-      setTimeout(() => callback(undefined, {}), Math.random() < 0.25 ? 500 : 0);
+      setTimeout(
+        () => callback(undefined, {}),
+        (this.connection.slow && Math.random() < 0.25) ? 500 : 0,
+      );
     }
   }
 
@@ -274,7 +283,7 @@ implements AMQPDriverConfirmChannel {
     callback?: (err: any, ok: amqp.Replies.Empty) => void,
   ): boolean {
     this.wannaFail('publish');
-    if (Math.round(Math.random())) {
+    if (!this.connection.slow || Math.round(Math.random())) {
       this.addMessage(exchange, routingKey, content, options, callback);
       return true;
     }
