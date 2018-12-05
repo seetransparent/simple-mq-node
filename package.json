@@ -1,39 +1,40 @@
 {
-  "name": "node-typescript-boilerplate",
-  "version": "0.0.0",
-  "description": "Minimalistic boilerplate to quick-start Node.js development in TypeScript.",
+  "name": "@trans/simple-mq-node",
+  "version": "0.0.5",
+  "description": "",
   "author": "The Transparent Team",
   "license": "",
-  "main": "build/src/main.js",
+  "main": "build/main.js",
   "ts:main": "src/main.ts",
-  "types": "src/main.ts",
+  "types": "build/main.d.ts",
   "engineStrict": true,
   "engines": {
     "node": ">= 8.9.0"
   },
   "devDependencies": {
     "@types/jest": "~22.2.3",
-    "@types/node": "~8.10.18",
+    "@types/node": "~8.10.37",
+    "babel-jest": "^23.0.0",
+    "dtslint": "^0.3.0",
     "jest": "~23.5.0",
     "rimraf": "~2.6.2",
     "ts-jest": "~23.1.4",
-    "babel-jest": "^23.0.0",
     "tslint": "~5.10.0",
     "tslint-config-airbnb": "^5.9.2",
     "tsutils": "~2.27.1",
-    "typescript": "~2.9.1"
+    "typescript": "^2.9.2"
   },
   "scripts": {
     "clean": "rimraf coverage build tmp",
-    "prepublish": "npm run build",
+    "prepare": "npm run build",
     "build": "tsc -p tsconfig.release.json",
     "build-test": "tsc -p tsconfig.json --noEmit",
     "watch": "tsc -w -p tsconfig.release.json",
-    "lint": "tslint -t stylish --project \"tsconfig.json\"",
+    "lint": "tslint -t stylish -p tsconfig.json -c tslint.json",
     "pretest": "npm run lint",
-    "test": "npm run test-only",
+    "test": "npm run test-only --",
     "test-only": "jest --coverage",
-    "test:watch": "jest --watch",
+    "test:watch": "jest --coverage --watch",
     "git-hooks": "./git-hooks/install"
   },
   "jest": {
@@ -43,10 +44,10 @@
     },
     "coverageThreshold": {
       "global": {
-        "branches": 100,
-        "functions": 100,
-        "lines": 100,
-        "statements": 100
+        "branches": 65,
+        "functions": 80,
+        "lines": 80,
+        "statements": 80
       }
     },
     "moduleFileExtensions": [
@@ -63,5 +64,14 @@
       "src/**/*.{ts,tsx,js,jsx}",
       "!src/**/*.d.ts"
     ]
+  },
+  "dependencies": {
+    "@types/uuid": "^3.4.4",
+    "amqplib": "^0.5.2",
+    "ts-node": "^7.0.1",
+    "uuid": "^3.3.2"
+  },
+  "peerDependencies": {
+    "amqplib": "^0.5.2"
   }
 }
