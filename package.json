@@ -66,8 +66,10 @@
     ]
   },
   "dependencies": {
+    "@types/lru-cache": "^4.1.1",
     "@types/uuid": "^3.4.4",
     "amqplib": "^0.5.2",
+    "lru-cache": "^5.1.1",
     "ts-node": "^7.0.1",
     "uuid": "^3.3.2"
   },
