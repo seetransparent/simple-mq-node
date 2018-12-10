@@ -20,6 +20,7 @@ export interface AMQPConfirmChannelOptions {
   inactivityTime?: number;
   connectionRetries?: number;
   connectionDelay?: number;
+  retryOnError?: boolean;
 }
 
 export interface AMQPConfirmChannelFullOptions
@@ -30,6 +31,7 @@ export interface AMQPConfirmChannelFullOptions
     [queue: string]: AMQPQueueAssertion;
   };
   inactivityTime: number;
+  retryOnError: boolean;
 }
 
 export class AMQPConfirmChannel
@@ -53,12 +55,18 @@ export class AMQPConfirmChannel
       retries: options.connectionRetries,
       delay: options.connectionDelay,
     });
-    this.options = { check: [], assert: {}, inactivityTime: 3e5, ...options };
+    this.options = {
+      check: [],
+      assert: {},
+      inactivityTime: 3e5,
+      retryOnError: true,
+      ...options,
+    };
     this.prepareQueues = true;
     this.expiration = 0;
   }
 
-  protected retryable(e: Error): boolean {
+  retryable(e: Error): boolean {
     if (e.message.indexOf('CHANNEL_ERROR - second \'channel.open\' seen') > -1) {
       // amqplib is buggy as hell: https://github.com/squaremo/amqp.node/issues/441
       return true;
@@ -151,7 +159,7 @@ export class AMQPConfirmChannel
       } catch (e) {
         console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
         this.discardChannel(channel, e); // errors break channel
-        if (!this.retryable(e)) throw e;
+        if (!this.retryable(e) && this.options.retryOnError) throw e;
       }
     }
   }
@@ -177,7 +185,7 @@ export class AMQPConfirmChannel
         );
       } catch (e) {
         this.discardChannel(channel, e); // errors break channel
-        if (!this.retryable(e)) throw e;
+        if (!this.retryable(e) && this.options.retryOnError) throw e;
       }
     }
   }

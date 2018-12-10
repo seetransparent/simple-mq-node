@@ -64,6 +64,10 @@ export interface AMQPOperationConsumeOptions
 
 export interface AMQPResultMessage extends ResultMessage<Buffer, AMQPOperationPushOptions> { }
 
+export interface AMQPConsumeHandler {
+  (message: amqp.Message): AMQPResultMessage | Promise<AMQPResultMessage> | null | undefined;
+}
+
 export class AMQPConnector
   extends ConnectionManager<AMQPDriverConnection>
   implements MessageQueueConnector<Buffer, amqp.Message>
@@ -588,11 +592,16 @@ export class AMQPConnector
 
   /**
    * Listen for messages in a queue.
+   *
+   * @param queue queue name
+   * @param type message type
+   * @param handler function that receive messages and, optionally, return responses
+   * @param options
    */
   async consume(
     queue: string,
     type: string | null | undefined,
-    handler: (message: amqp.Message) => (AMQPResultMessage | Promise<AMQPResultMessage> | null),
+    handler: AMQPConsumeHandler,
     options: AMQPOperationConsumeOptions = {},
   ): Promise<void> {
     const autoAck = !options.pull || options.pull.autoAck !== false; // default to true
@@ -605,6 +614,7 @@ export class AMQPConnector
             durable: true,
           },
         },
+        retryOnError: false,
         prefetch: 1,
       });
     const channelPush = (options.channels ? options.channels.push : null)
@@ -628,21 +638,27 @@ export class AMQPConnector
         'pull' | 'channels'
       >,
     };
-    let exit = false;
 
     try {
-      do {
+      while (true) {
+        // assert both channels are good
+        await Promise.all([
+          channelPull.connect(),
+          channelPush.connect(),
+        ]);
+
         let message: amqp.Message | undefined;
+        let response: AMQPResultMessage | null | undefined;
         try {
           message = await this.pull(queue, type, pullOptions);
-          const response = await handler(message);
+          response = await handler(message);
+        } catch (e) {
+          if (message) await channelPull.reject(message, true);
+          if (channelPull.retryable(e)) continue;
+          throw e;
+        }
 
-          if (!response) {
-            if (autoAck) await channelPull.ack(message);
-            continue;
-          }
-          exit = !!response.break;
-
+        if (response) {
           await this.push(
             response.queue || message.properties.replyTo,
             response.type || '',
@@ -658,12 +674,11 @@ export class AMQPConnector
               },
             },
           );
-          if (autoAck) await channelPull.ack(message);
-        } catch (e) {
-          if (message) await channelPull.reject(message, true).catch(() => {});
-          throw e;
         }
-      } while (!exit);
+
+        if (autoAck) await channelPull.ack(message);
+        if (response && response.break) break;
+      }
     } finally {
       await Promise.all([
         (!options.channels || !options.channels.pull) ? this.pushChannel(channelPull) : undefined,
