@@ -615,6 +615,7 @@ export class AMQPConnector
           },
         },
         retryOnError: false,
+        inactivityTime: Infinity,
         prefetch: 1,
       });
     const channelPush = (options.channels ? options.channels.push : null)
