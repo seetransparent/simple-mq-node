@@ -159,7 +159,7 @@ export class AMQPConfirmChannel
       } catch (e) {
         console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
         this.discardChannel(channel, e); // errors break channel
-        if (!this.retryable(e) && this.options.retryOnError) throw e;
+        if (!this.options.retryOnError || !this.retryable(e)) throw e;
       }
     }
   }
@@ -185,7 +185,7 @@ export class AMQPConfirmChannel
         );
       } catch (e) {
         this.discardChannel(channel, e); // errors break channel
-        if (!this.retryable(e) && this.options.retryOnError) throw e;
+        if (!this.options.retryOnError || !this.retryable(e)) throw e;
       }
     }
   }
