@@ -20,6 +20,7 @@ export interface AMQPConfirmChannelOptions {
   inactivityTime?: number;
   connectionRetries?: number;
   connectionDelay?: number;
+  retryOnError?: boolean;
 }
 
 export interface AMQPConfirmChannelFullOptions
@@ -30,6 +31,7 @@ export interface AMQPConfirmChannelFullOptions
     [queue: string]: AMQPQueueAssertion;
   };
   inactivityTime: number;
+  retryOnError: boolean;
 }
 
 export class AMQPConfirmChannel
@@ -53,9 +55,23 @@ export class AMQPConfirmChannel
       retries: options.connectionRetries,
       delay: options.connectionDelay,
     });
-    this.options = { check: [], assert: {}, inactivityTime: 3e5, ...options };
+    this.options = {
+      check: [],
+      assert: {},
+      inactivityTime: 3e5,
+      retryOnError: true,
+      ...options,
+    };
     this.prepareQueues = true;
     this.expiration = 0;
+  }
+
+  retryable(e: Error): boolean {
+    if (e.message.indexOf('CHANNEL_ERROR - second \'channel.open\' seen') > -1) {
+      // amqplib is buggy as hell: https://github.com/squaremo/amqp.node/issues/441
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -73,11 +89,7 @@ export class AMQPConfirmChannel
       try {
         channel = await super.connect(options);
       } catch (e) {
-        if (e.message.indexOf('CHANNEL_ERROR - second \'channel.open\' seen') > -1) {
-          // amqplib is buggy as hell: https://github.com/squaremo/amqp.node/issues/441
-          continue;
-        }
-        throw e;
+        if (!this.retryable(e)) throw e;
       }
     }
 
@@ -134,19 +146,21 @@ export class AMQPConfirmChannel
   }
 
   async operation<T = void>(name: AMQPDriverConfirmChannel.Operation, ...args: any[]): Promise<T> {
-    const channel = await this.connect();
-    try {
-      const result = await awaitWithErrorEvents<T>(
-        channel,
-        channel[name].apply(channel, args),
-        ['close', 'error'],
-      );
-      if (name === 'get' && !result) this.discardChannel(channel); // amqplib bug workaround
-      return result;
-    } catch (e) {
-      console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
-      this.discardChannel(channel, e); // errors break channel
-      throw e;
+    while (true) {
+      const channel = await this.connect();
+      try {
+        const result = await awaitWithErrorEvents<T>(
+          channel,
+          channel[name].apply(channel, args),
+          ['close', 'error'],
+        );
+        if (name === 'get' && !result) this.discardChannel(channel); // amqplib bug workaround
+        return result;
+      } catch (e) {
+        console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
+        this.discardChannel(channel, e); // errors break channel
+        if (!this.options.retryOnError || !this.retryable(e)) throw e;
+      }
     }
   }
 
@@ -156,21 +170,23 @@ export class AMQPConfirmChannel
     content: Buffer,
     options?: amqp.Options.Publish,
   ): Promise<boolean> {
-    const channel = await this.connect();
-    try {
-      return await awaitWithErrorEvents<boolean>(
-        channel,
-        new Promise(
-          (resolve, reject) => channel.publish(
-            exchange, routingKey, content, options,
-            (err: any) => err ? reject(err) : resolve(),
+    while (true) {
+      const channel = await this.connect();
+      try {
+        return await awaitWithErrorEvents<boolean>(
+          channel,
+          new Promise(
+            (resolve, reject) => channel.publish(
+              exchange, routingKey, content, options,
+              (err: any) => err ? reject(err) : resolve(),
+            ),
           ),
-        ),
-        ['close', 'error'],
-      );
-    } catch (e) {
-      this.discardChannel(channel, e); // errors break channel
-      throw e;
+          ['close', 'error'],
+        );
+      } catch (e) {
+        this.discardChannel(channel, e); // errors break channel
+        if (!this.options.retryOnError || !this.retryable(e)) throw e;
+      }
     }
   }
 
