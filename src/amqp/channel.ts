@@ -2,7 +2,9 @@ import * as amqp from 'amqplib';
 
 import { ConnectionManager, ConnectOptions } from '../base';
 import { AMQPDriverConnection, AMQPDriverConfirmChannel, Omit } from './types';
-import { awaitWithErrorEvents } from '../utils';
+import { awaitWithErrorEvents, Guard } from '../utils';
+
+const connectionGuard = new Guard();  // required because amqplib unsafety
 
 export interface AMQPQueueAssertion extends amqp.Options.AssertQueue {
   conflict?: 'ignore' | 'raise';
@@ -86,6 +88,13 @@ export class AMQPConfirmChannel
   }
 
   /**
+   * Disconnect channel
+   */
+  async disconnect() {
+    return await connectionGuard.exec(() => super.disconnect());
+  }
+
+  /**
    * Create and initialize channel with queues from config
    */
   async connect(options: ConnectOptions = {}): Promise<AMQPDriverConfirmChannel> {
@@ -95,7 +104,7 @@ export class AMQPConfirmChannel
     // force channel retrieval for known errors
     while (!channel) {
       try {
-        channel = await super.connect(options);
+        channel = await connectionGuard.exec(() => super.connect(options));
       } catch (e) {
         if (!this.retryable(e, 'connect')) throw e;
       }
