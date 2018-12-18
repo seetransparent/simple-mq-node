@@ -4,7 +4,7 @@ import { ConnectionManager, ConnectOptions } from '../base';
 import { AMQPDriverConnection, AMQPDriverConfirmChannel, Omit } from './types';
 import { awaitWithErrorEvents, Guard } from '../utils';
 
-const connectionGuard = new Guard();  // required because amqplib unsafety
+const connectionGuard = new Guard(); // used to circumvent amqplib race conditions
 
 export interface AMQPQueueAssertion extends amqp.Options.AssertQueue {
   conflict?: 'ignore' | 'raise';
