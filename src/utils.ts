@@ -32,6 +32,14 @@ export class PromiseAccumulator<T = any> implements PromiseLike<PromiseAccumulat
   }
 }
 
+export class Guard {
+  protected currentPromise: Promise<any> = Promise.resolve();
+
+  exec<T = any>(p: () => PromiseLike<T> | T): Promise<T> {
+    return this.currentPromise = this.currentPromise.then(() => p(), () => p());
+  }
+}
+
 export function omit<T extends { [prop: string]: any } = {}, V = T>(
   obj: T | undefined, properties: string[],
 ): V {

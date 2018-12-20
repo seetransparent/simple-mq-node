@@ -2,7 +2,9 @@ import * as amqp from 'amqplib';
 
 import { ConnectionManager, ConnectOptions } from '../base';
 import { AMQPDriverConnection, AMQPDriverConfirmChannel, Omit } from './types';
-import { awaitWithErrorEvents } from '../utils';
+import { awaitWithErrorEvents, Guard } from '../utils';
+
+const connectionGuard = new Guard(); // used to circumvent amqplib race conditions
 
 export interface AMQPQueueAssertion extends amqp.Options.AssertQueue {
   conflict?: 'ignore' | 'raise';
@@ -20,7 +22,6 @@ export interface AMQPConfirmChannelOptions {
   inactivityTime?: number;
   connectionRetries?: number;
   connectionDelay?: number;
-  retryOnError?: boolean;
 }
 
 export interface AMQPConfirmChannelFullOptions
@@ -31,7 +32,6 @@ export interface AMQPConfirmChannelFullOptions
     [queue: string]: AMQPQueueAssertion;
   };
   inactivityTime: number;
-  retryOnError: boolean;
 }
 
 export class AMQPConfirmChannel
@@ -59,14 +59,17 @@ export class AMQPConfirmChannel
       check: [],
       assert: {},
       inactivityTime: 3e5,
-      retryOnError: true,
       ...options,
     };
     this.prepareQueues = true;
     this.expiration = 0;
   }
 
-  retryable(e: Error): boolean {
+  retryable(e: Error, operation?: string): boolean {
+    if (operation === 'ack') {
+      // ack operations are never retryable
+      return false;
+    }
     if (e.message.indexOf('CHANNEL_ERROR - second \'channel.open\' seen') > -1) {
       // amqplib is buggy as hell: https://github.com/squaremo/amqp.node/issues/441
       return true;
@@ -75,25 +78,39 @@ export class AMQPConfirmChannel
   }
 
   /**
+   * Create and initialize channel with queues from config, autoreconnecting
+   * if channel is too old.
+   */
+  protected async autoconnect(operation: string): Promise<AMQPDriverConfirmChannel> {
+    const now = Date.now();
+    if (this.expiration < now && operation !== 'ack') await this.disconnect();
+    return this.connect();
+  }
+
+  /**
+   * Disconnect channel
+   */
+  async disconnect() {
+    return await connectionGuard.exec(() => super.disconnect());
+  }
+
+  /**
    * Create and initialize channel with queues from config
    */
   async connect(options: ConnectOptions = {}): Promise<AMQPDriverConfirmChannel> {
     // Disconnect on expired channel
-    const now = Date.now();
     let channel: AMQPDriverConfirmChannel | undefined;
-
-    if (this.expiration < now) await this.disconnect();
 
     // force channel retrieval for known errors
     while (!channel) {
       try {
-        channel = await super.connect(options);
+        channel = await connectionGuard.exec(() => super.connect(options));
       } catch (e) {
-        if (!this.retryable(e)) throw e;
+        if (!this.retryable(e, 'connect')) throw e;
       }
     }
 
-    this.expiration = now + this.options.inactivityTime;
+    this.expiration = Date.now() + this.options.inactivityTime;
     try {
       if (this.options.prefetch) {
         await channel.prefetch(this.options.prefetch);
@@ -147,7 +164,7 @@ export class AMQPConfirmChannel
 
   async operation<T = void>(name: AMQPDriverConfirmChannel.Operation, ...args: any[]): Promise<T> {
     while (true) {
-      const channel = await this.connect();
+      const channel = await this.autoconnect(name);
       try {
         const result = await awaitWithErrorEvents<T>(
           channel,
@@ -159,7 +176,7 @@ export class AMQPConfirmChannel
       } catch (e) {
         console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
         this.discardChannel(channel, e); // errors break channel
-        if (!this.options.retryOnError || !this.retryable(e)) throw e;
+        if (!this.retryable(e, name)) throw e;
       }
     }
   }
@@ -171,7 +188,7 @@ export class AMQPConfirmChannel
     options?: amqp.Options.Publish,
   ): Promise<boolean> {
     while (true) {
-      const channel = await this.connect();
+      const channel = await this.autoconnect('publish');
       try {
         return await awaitWithErrorEvents<boolean>(
           channel,
@@ -185,7 +202,7 @@ export class AMQPConfirmChannel
         );
       } catch (e) {
         this.discardChannel(channel, e); // errors break channel
-        if (!this.options.retryOnError || !this.retryable(e)) throw e;
+        if (!this.retryable(e, 'publish')) throw e;
       }
     }
   }

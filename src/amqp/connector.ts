@@ -614,8 +614,6 @@ export class AMQPConnector
             durable: true,
           },
         },
-        retryOnError: false,
-        inactivityTime: Infinity,
         prefetch: 1,
       });
     const channelPush = (options.channels ? options.channels.push : null)
@@ -655,7 +653,6 @@ export class AMQPConnector
           response = await handler(message);
         } catch (e) {
           if (message) await channelPull.reject(message, true);
-          if (channelPull.retryable(e)) continue;
           throw e;
         }
 
