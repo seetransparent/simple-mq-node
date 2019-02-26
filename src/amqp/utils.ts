@@ -21,7 +21,7 @@ export async function resolveConnection(
     return {
       username,
       password,
-      protocol: `${parts.protocol || 'amqp'}:`,
+      protocol: `${parts.protocol || 'amqp:'}`,
       hostname: await resolveHost(parts.hostname || 'localhost'),
       port: parseInt(parts.port || '0', 10) || undefined,
       vhost: parts.pathname ? parts.pathname.substr(1) : undefined,
