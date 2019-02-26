@@ -65,14 +65,14 @@ export class ConnectionManager<T> {
   protected async startConnection(options: ConnectOptions) {
     let lastError = new Error('No connection attempt has been made');
     const promises = new PromiseAccumulator();
-    const { retries, delay, connect, timeout } = this.withConnectionDefaults({
+    const { retries, delay, connect, disconnect, timeout } = this.withConnectionDefaults({
       ...this.connectionOptions,
       ...options,
     });
     try {
       for (let retry = -1; retry < retries; retry += 1) {
         try {
-          this.connection = await withTimeout(connect, timeout);
+          this.connection = await withTimeout(connect, timeout, disconnect);
           if (this.bannedConnections.has(this.connection)) {
             promises.unconditionally(this.banConnection(this.connection)); // update ban, wait later
             continue; // do not delay

@@ -83,15 +83,22 @@ export async function awaitWithErrorEvents<T>(
   });
 }
 
-export async function withTimeout<T>(fnc: () => PromiseLike<T> | T, timeout: number): Promise<T> {
+export async function withTimeout<T>(
+  fnc: () => PromiseLike<T> | T,
+  timeout: number,
+  cleanup?: (v: T) => PromiseLike<void> | void,
+): Promise<T> {
   return new Promise((resolve, reject) => {
-    let resolved = false;
+    let pending = true;
     function cback(error: Error | null, result?: T) {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(timer);
-      if (error) reject(error);
-      else resolve(result);
+      if (pending) {
+        pending = false;
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve(result);
+      } else if (result && cleanup) {
+        Promise.resolve(result).then(cleanup).catch(() => { }); // TODO: optional logging
+      }
     }
     const timer = setTimeout(() => cback(new TimeoutError(`Timeout after ${timeout}ms`)), timeout);
     Promise.resolve().then(fnc).then((v?: T) => cback(null, v), cback);
