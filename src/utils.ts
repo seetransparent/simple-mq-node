@@ -1,4 +1,5 @@
 import * as dns from 'dns';
+import * as net from 'net';
 import * as mem from 'mem';
 
 import { AnyObject } from './types';
@@ -130,7 +131,8 @@ export function adler32(data: string, sum: number = 1, base: number = 65521, nma
 
 const getHostAddresses = mem(
   (host: string) => {
-    if (host === 'localhost') return Promise.resolve(['127.0.0.1']);
+    if (net.isIP(host)) return [host];
+    if (host === 'localhost') return ['127.0.0.1'];
     return new Promise<string[]>((res, rej) => dns.resolve(host, (e, a) => e ? rej(e) : res(a)));
   },
   { maxAge: 2000 },
