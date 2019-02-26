@@ -7,6 +7,7 @@ import { ConnectionManager, ConnectionManagerOptions } from '../base';
 import { TimeoutError, PullError } from '../errors';
 import { omit, objectKey, adler32 } from '../utils';
 
+import { resolveConnection } from './utils';
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
 import { AMQPDriverConnection, Omit } from './types';
 
@@ -82,7 +83,7 @@ export class AMQPConnector
 
   constructor(options: AMQPConnectorOptions) {
     const opts: AMQPConnectorFullOptions = {
-      connect: () => amqp.connect(opts.uri),
+      connect: () => resolveConnection(opts.uri).then(c => amqp.connect(c)),
       disconnect: con => con.close(),
       name: '',
       exchange: '',
@@ -97,6 +98,7 @@ export class AMQPConnector
       connect: opts.connect,
       disconnect: opts.disconnect,
       retries: options.connectionRetries,
+      timeout: opts.timeout,
       delay: options.connectionDelay,
     });
     this.options = opts;

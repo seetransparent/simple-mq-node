@@ -2,6 +2,7 @@ import * as lib from '../src/main';
 import * as errors from '../src/errors';
 import * as mock from '../src/amqp/driver-mock';
 import { AnyObject } from '../src/types';
+import { resolveConnection } from '../src/amqp/utils';
 
 describe('amqp', () => {
   describe('AMQPConnector', () => {
@@ -28,8 +29,39 @@ describe('amqp', () => {
           'Connection closed: 504(CHANNEL - ERROR) with message '
           + '"CHANNEL_ERROR - second \'channel.open\' seen"',
         );
-        setTimeout(() => delete connection.failing.createConfirmChannel, 200);
+        setTimeout(() => delete connection.failing.createConfirmChannel, 10);
         await expect(connector.channel()).resolves.toBeTruthy();
+      });
+
+      it('does not retry network errors', async () => {
+        class MyError extends Error { }
+
+        let attempt = 0;
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connectionDelay: 0,
+          connect() {
+            attempt += 1;
+            return Promise.reject(new MyError('Error: getaddrinfo EAI_AGAIN'));
+          },
+        });
+        await expect(connector.ping()).rejects.toBeInstanceOf(MyError);
+        expect(attempt).toEqual(1);
+      });
+
+      it('does not retry timeout errors', async () => {
+        let attempt = 0;
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connectionDelay: 0,
+          timeout: 100,
+          connect: () => {
+            attempt += 1;
+            return new Promise(() => {});
+          },
+        });
+        await expect(connector.ping()).rejects.toBeInstanceOf(errors.TimeoutError);
+        expect(attempt).toEqual(1);
       });
 
       it('limit retries', async () => {
@@ -310,6 +342,15 @@ describe('amqp', () => {
         const connector = new lib.AMQPConnector({ name: 'test', connect: () => connection });
 
         await expect(connector.ping()).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('utils', () => {
+    describe('resolveConnection', () => {
+      it('should resolve hosts', async () => {
+        const { hostname } = await resolveConnection('amqp://localhost');
+        expect(hostname).toBe('127.0.0.1');
       });
     });
   });

@@ -1,5 +1,6 @@
 import { AnyObject } from './types';
-import { PromiseAccumulator } from './utils';
+import { PromiseAccumulator, withTimeout } from './utils';
+import { TimeoutError } from './errors';
 
 const bannedConnectionsByConstructor: Map<Function, Set<any>> = new Map();
 
@@ -7,12 +8,14 @@ export interface ConnectOptions {
   retries?: number;
   delay?: number;
   banPeriod?: number;
+  timeout?: number;
 }
 
 interface FullConnectOptions extends ConnectOptions {
   retries: number;
   delay: number;
   banPeriod: number;
+  timeout: number;
 }
 
 export interface ConnectionManagerOptions<T> extends ConnectOptions {
@@ -51,6 +54,7 @@ export class ConnectionManager<T> {
   protected withConnectionDefaults<T extends AnyObject>(options: T): FullConnectOptions & T {
     const delay = Number.isFinite(options.delay as number) ? options.delay || 0 : 100;
     return {
+      timeout: 5000,
       ...(options as any),
       delay,
       retries: Math.max(options.retries || 0, -1),
@@ -61,20 +65,21 @@ export class ConnectionManager<T> {
   protected async startConnection(options: ConnectOptions) {
     let lastError = new Error('No connection attempt has been made');
     const promises = new PromiseAccumulator();
-    const { retries, delay, connect } = this.withConnectionDefaults({
+    const { retries, delay, connect, timeout } = this.withConnectionDefaults({
       ...this.connectionOptions,
       ...options,
     });
     try {
       for (let retry = -1; retry < retries; retry += 1) {
         try {
-          this.connection = await connect();
+          this.connection = await withTimeout(connect, timeout);
           if (this.bannedConnections.has(this.connection)) {
             promises.unconditionally(this.banConnection(this.connection)); // update ban, wait later
             continue; // do not delay
           }
           return;
         } catch (e) {
+          if (e instanceof TimeoutError) throw e;  // do not retry timeout errors
           lastError = e;
         }
         await new Promise(r => setTimeout(r, delay));

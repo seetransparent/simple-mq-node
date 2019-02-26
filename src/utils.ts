@@ -1,4 +1,8 @@
+import * as dns from 'dns';
+import * as mem from 'mem';
+
 import { AnyObject } from './types';
+import { TimeoutError } from './errors';
 
 export type PromiseAccumulatorResult<T> = T | undefined;
 
@@ -79,6 +83,21 @@ export async function awaitWithErrorEvents<T>(
   });
 }
 
+export async function withTimeout<T>(fnc: () => PromiseLike<T> | T, timeout: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+    function cback(error: Error | null, result?: T) {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(result);
+    }
+    const timer = setTimeout(() => cback(new TimeoutError(`Timeout after ${timeout}ms`)), timeout);
+    Promise.resolve().then(fnc).then((v?: T) => cback(null, v), cback);
+  });
+}
+
 export function objectKey(obj: AnyObject): string {
   const entries = Object.entries(obj);
   entries.sort(([a], [b]) => (a < b) ? -1 : 1);
@@ -100,4 +119,17 @@ export function adler32(data: string, sum: number = 1, base: number = 65521, nma
     b %= base;
   }
   return ((b << 16) | a) >>> 0;
+}
+
+const getHostAddresses = mem(
+  (host: string) => {
+    if (host === 'localhost') return Promise.resolve(['127.0.0.1']);
+    return new Promise<string[]>((res, rej) => dns.resolve(host, (e, a) => e ? rej(e) : res(a)));
+  },
+  { maxAge: 2000 },
+);
+
+export async function resolveHost(host: string) {
+  const addresses = await getHostAddresses(host);
+  return addresses[Math.random() * addresses.length | 0];
 }
