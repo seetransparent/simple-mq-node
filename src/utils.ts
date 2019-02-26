@@ -89,7 +89,7 @@ export async function withTimeout<T>(
   timeout: number,
   cleanup?: (v: T) => PromiseLike<void> | void,
 ): Promise<T> {
-  return new Promise((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     let pending = true;
     function cback(error: Error | null, result?: T) {
       if (pending) {
