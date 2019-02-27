@@ -10,6 +10,12 @@ export interface AMQPQueueAssertion extends amqp.Options.AssertQueue {
   conflict?: 'ignore' | 'raise';
 }
 
+export interface AMQPQueueFilter {
+  has: (name: string) => boolean;
+  add: (name: string) => void;
+  delete: (name: string) => void;
+}
+
 export interface AMQPConfirmChannelOptions {
   manager: ConnectionManager<AMQPDriverConnection>;
   check?: string[];
@@ -22,11 +28,7 @@ export interface AMQPConfirmChannelOptions {
   inactivityTime?: number;
   connectionRetries?: number;
   connectionDelay?: number;
-  queueFilter?: {
-    has: (name: string) => boolean;
-    add: (name: string) => void;
-    delete: (name: string) => void;
-  };
+  queueFilter?: AMQPQueueFilter;
 }
 
 export interface AMQPConfirmChannelFullOptions
@@ -37,11 +39,7 @@ export interface AMQPConfirmChannelFullOptions
     [queue: string]: AMQPQueueAssertion;
   };
   inactivityTime: number;
-  queueFilter: {
-    has: (name: string) => boolean,
-    add: (name: string) => void,
-    delete: (name: string) => void,
-  };
+  queueFilter: AMQPQueueFilter;
 }
 
 export class AMQPConfirmChannel
@@ -69,7 +67,11 @@ export class AMQPConfirmChannel
       check: [],
       assert: {},
       inactivityTime: 3e5,
-      queueFilter: new Set(),
+      queueFilter: {
+        has: () => false,
+        add: () => {},
+        delete: () => {},
+      },
       ...options,
     };
     this.expiration = 0;
@@ -254,6 +256,7 @@ export class AMQPConfirmChannel
     queue: string,
     options?: amqp.Options.DeleteQueue,
   ): Promise<amqp.Replies.DeleteQueue> {
+    this.options.queueFilter.delete(queue);
     return await this.operation<amqp.Replies.DeleteQueue>('deleteQueue', queue, options);
   }
 

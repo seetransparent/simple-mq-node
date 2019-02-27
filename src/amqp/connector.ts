@@ -32,6 +32,7 @@ interface AMQPConnectorFullOptions
   uri: string;
   timeout: number;
   channelCacheSize: number;
+  queueCacheSize: number;
 }
 
 interface CheckOptions extends Pick<amqp.MessageProperties, 'correlationId' | 'type'> { }
@@ -80,7 +81,7 @@ export class AMQPConnector
 
   protected channelsById: LRUCache.Cache<string | null, AMQPConfirmChannel>;
   protected channelsByType: LRUCache.Cache<string | null, Set<AMQPConfirmChannel>>;
-  protected knownQueues: Set<string>;
+  protected knownQueues: LRUCache.Cache<string, boolean>;
 
   constructor(options: AMQPConnectorOptions) {
     const opts: AMQPConnectorFullOptions = {
@@ -93,6 +94,7 @@ export class AMQPConnector
       connectionRetries: 10,
       connectionDelay: 1000,
       channelCacheSize: 100,
+      queueCacheSize: 10000,
       ...options,
     };
     super({
@@ -132,14 +134,14 @@ export class AMQPConnector
         }
       },
     });
-    this.knownQueues = new Set<string>();
+    this.knownQueues = new LRUCache({ max: opts.queueCacheSize });
   }
 
   disconnect(): Promise<void> {
     const promise = super.disconnect();
     this.channelsById.reset();
     this.channelsByType.reset();
-    this.knownQueues.clear();
+    this.knownQueues.reset();
     return promise;
   }
 
@@ -365,7 +367,11 @@ export class AMQPConnector
       manager: this,
       connectionRetries: this.options.connectionRetries,
       connectionDelay: this.options.connectionDelay,
-      queueFilter: this.knownQueues,
+      queueFilter: {
+        add: name => this.knownQueues.set(name, true),
+        has: name => !!this.knownQueues.get(name),
+        delete: name => this.knownQueues.del(name),
+      },
       ...options,
     });
   }
