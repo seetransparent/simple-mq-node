@@ -63,7 +63,7 @@ export async function awaitWithErrorEvents<T>(
   promise: T | PromiseLike<T>,
   errorEvents: string[] = ['error'],
 ): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
+  return await new Promise<T>((resolve, reject) => {
     let finished = false;
     function callback(err?: Error | null, result?: T) {
       if (!finished) {
@@ -89,7 +89,7 @@ export async function withTimeout<T>(
   timeout: number,
   cleanup?: (v: T) => PromiseLike<void> | void,
 ): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
+  return await new Promise<T>((resolve, reject) => {
     let pending = true;
     function cback(error: Error | null, result?: T) {
       if (pending) {
@@ -130,10 +130,12 @@ export function adler32(data: string, sum: number = 1, base: number = 65521, nma
 }
 
 const getHostAddresses = mem(
-  (host: string) => {
+  async (host: string) => {
     if (net.isIP(host)) return [host];
     if (host === 'localhost') return ['127.0.0.1'];
-    return new Promise<string[]>((res, rej) => dns.resolve(host, (e, a) => e ? rej(e) : res(a)));
+    return await new Promise<string[]>(
+      (res, rej) => dns.resolve(host, (e, a) => e ? rej(e) : res(a)),
+    );
   },
   { maxAge: 2000 },
 );
