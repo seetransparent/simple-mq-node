@@ -22,6 +22,11 @@ export interface AMQPConfirmChannelOptions {
   inactivityTime?: number;
   connectionRetries?: number;
   connectionDelay?: number;
+  queueFilter?: {
+    has: (name: string) => boolean;
+    add: (name: string) => void;
+    delete: (name: string) => void;
+  };
 }
 
 export interface AMQPConfirmChannelFullOptions
@@ -32,6 +37,11 @@ export interface AMQPConfirmChannelFullOptions
     [queue: string]: AMQPQueueAssertion;
   };
   inactivityTime: number;
+  queueFilter: {
+    has: (name: string) => boolean,
+    add: (name: string) => void,
+    delete: (name: string) => void,
+  };
 }
 
 export class AMQPConfirmChannel
@@ -45,7 +55,7 @@ export class AMQPConfirmChannel
   >
 {
   protected options: AMQPConfirmChannelFullOptions;
-  protected prepareQueues: boolean;
+  protected knownQueues: Set<string>;
   protected expiration: number;
 
   constructor(options: AMQPConfirmChannelOptions) {
@@ -59,9 +69,9 @@ export class AMQPConfirmChannel
       check: [],
       assert: {},
       inactivityTime: 3e5,
+      queueFilter: new Set(),
       ...options,
     };
-    this.prepareQueues = true;
     this.expiration = 0;
   }
 
@@ -94,12 +104,13 @@ export class AMQPConfirmChannel
     return await connectionGuard.exec(() => super.disconnect());
   }
 
-  /**
-   * Create and initialize channel with queues from config
-   */
-  async connect(options: ConnectOptions = {}): Promise<AMQPDriverConfirmChannel> {
-    // Disconnect on expired channel
+  protected async amqpChannel(
+    options: ConnectOptions,
+    reconnect = false,
+  ): Promise<AMQPDriverConfirmChannel> {
     let channel: AMQPDriverConfirmChannel | undefined;
+
+    if (reconnect) await this.disconnect(); // force fresh channel
 
     // force channel retrieval for known errors
     while (!channel) {
@@ -109,34 +120,66 @@ export class AMQPConfirmChannel
         if (!this.retryable(e, 'connect')) throw e;
       }
     }
-
     this.expiration = Date.now() + this.options.inactivityTime;
+    return channel;
+  }
+
+  /**
+   * Create and initialize channel with queues from config
+   */
+  async connect(options: ConnectOptions = {}): Promise<AMQPDriverConfirmChannel> {
+    let channel = await this.amqpChannel(options);
+    const queueFilter = this.options.queueFilter;
+
+    async function checkQueue(name: string) {
+      if (!queueFilter.has(name)) {
+        await awaitWithErrorEvents(
+          channel,
+          channel.checkQueue(name),
+          ['close', 'error'],
+        );
+        queueFilter.add(name);
+      }
+    }
+
+    async function assertQueue(name: string, assertion?: amqp.Options.AssertQueue) {
+      if (!queueFilter.has(name)) {
+        await awaitWithErrorEvents(
+          channel,
+          channel.assertQueue(name, assertion),
+          ['close', 'error'],
+        );
+        queueFilter.add(name);
+      }
+    }
+
     try {
       if (this.options.prefetch) {
         await channel.prefetch(this.options.prefetch);
       }
-      if (this.prepareQueues) {
-        for (const name of this.options.check) {
-          await channel.checkQueue(name);
-        }
-        for (const [name, assertion] of Object.entries(this.options.assert)) {
-          try {
-            await awaitWithErrorEvents(
-              channel,
-              channel.assertQueue(name, assertion),
-              ['close', 'error'],
-            );
-          } catch (err) {
-            if (assertion.conflict !== 'ignore') throw err;
-            await this.disconnect();
-            channel = await super.connect(options);
-          }
-        }
-        this.prepareQueues = false;
+      for (const name of this.options.check) {
+        await checkQueue(name);
       }
-      // some operations cause error on channel without throwing errors
-      // channel.once('error', () => this.disconnect());
-      // channel.once('close', () => this.disconnect());
+      for (const [name, assertion] of Object.entries(this.options.assert)) {
+        if (this.options.queueFilter.has(name)) continue;
+
+        // optimize common case: don't care about conflicts with existing queues
+        if (assertion.conflict === 'ignore') {
+          try {
+            await checkQueue(name);
+            continue;
+          } catch (err) {
+            channel = await this.amqpChannel(options);
+          }
+          try {
+            await assertQueue(name, assertion);
+          } catch (err) {
+            channel = await this.amqpChannel(options);
+          }
+        } else {
+          await assertQueue(name, assertion);
+        }
+      }
       return channel;
     } catch (e) {
       await this.disconnect();

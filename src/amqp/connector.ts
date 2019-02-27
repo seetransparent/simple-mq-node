@@ -80,6 +80,7 @@ export class AMQPConnector
 
   protected channelsById: LRUCache.Cache<string | null, AMQPConfirmChannel>;
   protected channelsByType: LRUCache.Cache<string | null, Set<AMQPConfirmChannel>>;
+  protected knownQueues: Set<string>;
 
   constructor(options: AMQPConnectorOptions) {
     const opts: AMQPConnectorFullOptions = {
@@ -131,12 +132,14 @@ export class AMQPConnector
         }
       },
     });
+    this.knownQueues = new Set<string>();
   }
 
   disconnect(): Promise<void> {
     const promise = super.disconnect();
     this.channelsById.reset();
     this.channelsByType.reset();
+    this.knownQueues.clear();
     return promise;
   }
 
@@ -362,6 +365,7 @@ export class AMQPConnector
       manager: this,
       connectionRetries: this.options.connectionRetries,
       connectionDelay: this.options.connectionDelay,
+      queueFilter: this.knownQueues,
       ...options,
     });
   }
