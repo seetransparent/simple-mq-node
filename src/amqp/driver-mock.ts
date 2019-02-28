@@ -78,11 +78,22 @@ export class AMQPMockQueue {
     const alive = this.consumers.filter(consumer => consumer.consumerTag !== consumerTag);
     return this.consumers.splice(0, this.consumers.length, ...alive)[0];
   }
+
+  abortConsumers() {
+    this.consumers
+      .splice(0, this.consumers.length)
+      .forEach(consumer => consumer.handler(null));
+  }
 }
 
 export class AMQPMockBase extends events.EventEmitter {
   public messageCounter: number = 0;
   public failing: { [name: string]: Error } = {};
+
+  wannaFail(method: string) {
+    if (this.failing['*']) throw this.failing['*'];
+    if (this.failing[method]) throw this.failing[method];
+  }
 }
 
 export class AMQPMockConnection
@@ -99,10 +110,6 @@ implements AMQPDriverConnection {
     this.slow = options.slow !== false;
   }
 
-  wannaFail(method: string) {
-    if (this.failing[method]) throw this.failing[method];
-  }
-
   async close(): Promise<void> {
     this.wannaFail('close');
   }
@@ -113,6 +120,12 @@ implements AMQPDriverConnection {
     this.channels.push(channel);
     this.createdChannels += 1;
     return channel;
+  }
+
+  async bork(error: Error): Promise<void> {
+    this.failing['*'] = error;
+    this.channels.forEach(channel => channel.emit('error', error));
+    Object.values(this.queues).forEach(queue => queue.abortConsumers());
   }
 
   getQueue(
@@ -208,7 +221,7 @@ implements AMQPDriverConfirmChannel {
     if (this.closed) throw new Error(`operation ${method} on closed channel`);
     if (this.errored) throw this.errored;
     try {
-      if (this.failing[method]) throw this.failing[method];
+      super.wannaFail(method);
       this.connection.wannaFail(`channel.${method}`);
     } catch (e) {
       this.emit('error', e);
@@ -320,14 +333,12 @@ implements AMQPDriverConfirmChannel {
       const consumer = q.addConsumer(onMessage, options);
       return { consumerTag: consumer.consumerTag };
     }
-    this.emit('error', new Error(
-      'Channel closed by server: 404 (NOT-FOUND) with message '
-      + `"NOT_FOUND - no queue '${queue}' in vhost '/'"`,
-    ));
-    throw new Error(
+    const error = new Error(
       'Channel closed by server: 404 (NOT-FOUND) with message '
       + `"NOT_FOUND - no queue '${queue}' in vhost '/'"`,
     );
+    this.emit('error', error);
+    throw error;
   }
 
   async cancel(consumerTag: string): Promise<amqp.Replies.Empty> {
@@ -337,6 +348,7 @@ implements AMQPDriverConfirmChannel {
   }
 
   async prefetch(count: number, global?: boolean): Promise<amqp.Replies.Empty> {
+    this.wannaFail('prefetch');
     return {};
   }
 
@@ -348,6 +360,7 @@ implements AMQPDriverConfirmChannel {
   }
 
   reject(message: amqp.Message, requeue?: boolean): void {
+    this.wannaFail('reject');
     if (requeue) {
       message.fields.redelivered = true;
       this.connection

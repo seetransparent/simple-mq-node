@@ -5,7 +5,7 @@ import * as LRUCache from 'lru-cache';
 import { MessageQueueConnector, ResultMessage } from '../types';
 import { ConnectionManager, ConnectionManagerOptions } from '../base';
 import { TimeoutError, PullError } from '../errors';
-import { omit, objectKey, adler32 } from '../utils';
+import { PromiseAccumulator, omit, objectKey, adler32, withTimeout } from '../utils';
 
 import { resolveConnection } from './utils';
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
@@ -247,74 +247,90 @@ export class AMQPConnector
     consumeOptions: amqp.Options.Consume & { consumerTag: string };
     checkOptions: CheckOptions;
   }): Promise<amqp.ConsumeMessage> {
+    const checkMessage = this.checkMessage.bind(this);
+    const { consumerTag } = consumeOptions;
     const received = new Set();
-    const promises: Promise<any>[] = [];
-    try {
-      // at last resort, subscribe to queue and return single message
-      return await new Promise<amqp.Message>((resolve, reject) => {
-        let finished = false;
-        let guard: NodeJS.Timer;
-        const callback = (error: Error | null, message?: amqp.Message | null): void => {
-          if (!finished) {
-            if (!error) {
-              if (!message) {
-                return callback(
-                  new PullError('Cancelled by remote server'),
-                );
-              }
-              if (received.has(message.properties.messageId)) {
-                promises.push(channel.reject(message, true)); // requeue
-                return callback(
-                  new DuplicatedMessage(
-                    `Unwanted message ${message.properties.messageId}`
-                    + (message.properties.type ? ` (${message.properties.type})` : '')
-                    + ` found twice on ${queue}`,
-                  ),
-                );
-              }
-              if (!this.checkMessage(message, checkOptions)) {
-                promises.push(channel.reject(message, true)); // requeue
-                received.add(message.properties.messageId);
-                return; // do not resolve
-              }
-              if (autoAck) {
-                promises.push(channel.ack(message));
-              }
+    let closing = false;
+    let promise:
+      Promise<{ e?: Error, v?: amqp.ConsumeMessage, r?: amqp.Replies.Consume }>
+      = Promise.resolve({});
+
+    function consumer(error: Error | null, message?: amqp.Message | null): void {
+      let rejection: Error | undefined;
+      let success = false;
+
+      if (error) {
+        rejection = error;
+      } else if (!message) {
+        rejection = new PullError('Cancelled by remote server');
+      } else if (received.has(message.properties.messageId)) {
+        rejection = new DuplicatedMessage(
+          `Unwanted message ${message.properties.messageId}`
+          + (message.properties.type ? ` (${message.properties.type})` : '')
+          + ` found twice on ${queue}`,
+        );
+      } else {
+        received.add(message.properties.messageId);
+        success = checkMessage(message, checkOptions);
+      }
+
+      if (closing) {
+        promise = promise.then(async (o) => {
+          const { v } = o;
+          let { e } = o;
+          if (message) await channel.reject(message, true).catch(r => e = e || r);
+          return { e, v };
+        });
+      } else {
+        closing = true;
+
+        promise = promise.then(async (o) => {
+
+
+
+
+          if (message) {
+            if (success && autoAck && !errors.length) {
+              await channel
+                .ack(message)
+                .catch(e => errors.push(e));
+            }
+            values.push(message);
+          }
+
+          if (rejection) {
+            errors.push(rejection);
+          }
+
+          if (errors.length || !success) {
+            for (const v of values) {
+              await channel.reject(v, true).catch(() => { });
             }
 
-            finished = true; // it's important to keep this synchronous
-            if (guard) clearTimeout(guard);
-
-            // unsubscribe and resolve or reject
-            channel
-              .cancel(consumeOptions.consumerTag)
-              .then(
-                () => (message && !error) ? resolve(message) : reject(error),
-                () => (message && !error) ? resolve(message) : reject(error),
-                // we do not care about handling here because both message and
-                // original error are both more important than unsubscribing
-              );
-          } else if (message) {
-            channel.reject(message, true).catch(() => { }); // too late: unhandleable
           }
-        };
 
-        // setup timeout
-        if (Number.isFinite(cancelAt)) {
-          guard = setTimeout(
-            () => callback(new TimeoutError('Timeout reached')),
-            cancelAt - Date.now(),
-          );
-        }
-
-        // subscribe
-        channel
-          .consume(queue, message => callback(null, message), consumeOptions)
-          .catch(callback);
-      });
-    } finally {
-      await Promise.all(promises);
+          return e ? { e } : { v: message || v };
+        });
+      }
     }
+
+    async function consume() {
+      return await channel.consume(
+        queue,
+        message => consumer(null, message),
+        consumeOptions,
+      ).then(async (r) => {
+        const { e, v } = await promise;
+        return { e, v, r };
+      });
+    }
+
+    const { e, v } = Number.isFinite(cancelAt)
+      ? await withTimeout(consume, cancelAt - Date.now()).catch(e => ({ e, v: undefined }))
+      : await consume();
+
+    if (v) return v;
+    throw e;
   }
 
   /**
@@ -491,42 +507,29 @@ export class AMQPConnector
     };
 
     try {
-      const methods = [
-        // try using get (faster and safer, avoiding consumer management)
-        () => this.getMessage({
+      return (
+        await this.getMessage({
           ...commonOptions,
           getOptions: {
             noAck: options.pull ? options.pull.noAck : false,
           },
-        }),
-        () => this.consumeOnce({
+        })
+        || await this.consumeOnce({
           ...commonOptions,
           consumeOptions: {
             consumerTag,
             ...omit(options.pull, ['correlationId', 'autoAck']),
           },
-        }),
-      ];
-      try {
-        for (const method of methods) {
-          const message = await method();
-          if (message) return message;
-        }
-      } catch (e) {
-        if (e instanceof DuplicatedMessage) {
-          const now = Date.now();
-          if (cancelAt > now) {
-            console.warn(e);
-            const timeout = cancelAt - now;
-            await new Promise(r => setTimeout(r, Math.min(timeout, 100)));
-            return await this.pull(queue, type, { ...options, timeout });
-          }
-          throw new TimeoutError('Timeout reached');
-        }
-        throw e;
-      }
-      throw Error('Unexpected condition, runtime error');
+        })
+      );
     } catch (e) {
+      const now = Date.now();
+      if (e instanceof DuplicatedMessage && cancelAt > now) {
+        console.warn(e);
+        const timeout = cancelAt - now;
+        await new Promise(r => setTimeout(r, Math.min(timeout, 10)));
+        return await this.pull(queue, type, { ...options, timeout });
+      }
       if (e instanceof TimeoutError) {
         throw new TimeoutError(`Timeout after ${options.timeout}ms`);
       }

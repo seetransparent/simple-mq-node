@@ -12,6 +12,8 @@ export type PromiseAccumulatorPromiseLike<T> =
   | PromiseAccumulatorResult<T>;
 
 export class PromiseAccumulator<T = any> implements PromiseLike<PromiseAccumulatorResult<T>[]> {
+  public rejections: any[] = [];
+
   constructor(protected promises: PromiseAccumulatorPromiseLike<T>[] = []) {}
 
   push(...promises: PromiseAccumulatorPromiseLike<T>[]) {
@@ -21,7 +23,7 @@ export class PromiseAccumulator<T = any> implements PromiseLike<PromiseAccumulat
 
   unconditionally(...promises: PromiseAccumulatorPromiseLike<T>[]) {
     this.push(
-      ...promises.map(x => Promise.resolve(x).catch(() => undefined)),
+      ...promises.map(x => Promise.resolve(x).catch(e => (this.rejections.push(e), undefined))),
     );
     return this;
   }

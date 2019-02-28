@@ -265,10 +265,29 @@ describe('amqp', () => {
           await connector.disconnect();
         }
       });
+
+      it('propagates network errors', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connect: () => connection,
+        });
+        try {
+          const queue = 'rpc-queue';
+          const publisher = connector.rpc(queue, 'correct', Buffer.from('ok'));
+          await connector.pull(queue, 'correct'); // ensure we're on the middle of rpc
+
+          const error = new Error('Random network error');
+          connection.bork(error);
+          await expect(publisher).rejects.toBe(error);
+        } finally {
+          await connector.disconnect();
+        }
+      });
     });
 
     describe('consume', () => {
-      it('should counsume a meesage from rpc and return a value', async () => {
+      it('should consume a message from rpc and return a value', async () => {
         const connection = new mock.AMQPMockConnection();
         const connectorRPC = new lib.AMQPConnector({
           name: 'test-rpc',
