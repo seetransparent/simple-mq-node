@@ -122,10 +122,17 @@ implements AMQPDriverConnection {
     return channel;
   }
 
-  async bork(error: Error): Promise<void> {
+  bork(error: Error) {
     this.failing['*'] = error;
-    this.channels.forEach(channel => channel.emit('error', error));
+    for (const channel of this.channels) {
+      if (!channel.listenerCount('error')) continue;
+      channel.emit('error', error);
+    }
     Object.values(this.queues).forEach(queue => queue.abortConsumers());
+  }
+
+  unbork() {
+    delete this.failing['*'];
   }
 
   getQueue(

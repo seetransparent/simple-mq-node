@@ -203,6 +203,7 @@ export class AMQPConnector
     getOptions: amqp.Options.Get;
     checkOptions: CheckOptions;
   }): Promise<amqp.GetMessage | null> {
+    console.log('getMessage');
     const received = new Set();
     for (
       let message: amqp.GetMessage | false;
@@ -242,6 +243,7 @@ export class AMQPConnector
     consumeOptions: amqp.Options.Consume & { consumerTag: string };
     checkOptions: CheckOptions;
   }): Promise<amqp.ConsumeMessage> {
+    console.log('consumeOnce');
     const checkMessage = this.checkMessage.bind(this);
     const { consumerTag } = consumeOptions;
     const received = new Set();
@@ -492,6 +494,7 @@ export class AMQPConnector
             noAck: options.pull ? options.pull.noAck : false,
           },
         }).catch(async (e) => {
+          console.log(e);
           if (e instanceof DuplicatedMessage) return console.warn(e);
           throw e;
         })
@@ -502,6 +505,7 @@ export class AMQPConnector
             ...omit(options.pull, ['correlationId', 'autoAck']),
           },
         }).catch(async (e) => {
+          console.log(e);
           if (e instanceof DuplicatedMessage) return console.warn(e);
           throw e;
         })
