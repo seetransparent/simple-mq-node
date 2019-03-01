@@ -250,18 +250,15 @@ export class AMQPConnector
     const checkMessage = this.checkMessage.bind(this);
     const { consumerTag } = consumeOptions;
     const received = new Set();
-    let closing = false;
     let promise:
       Promise<{ e?: Error, v?: amqp.ConsumeMessage, r?: amqp.Replies.Consume }>
       = Promise.resolve({});
 
-    function consumer(error: Error | null, message?: amqp.Message | null): void {
+    function handler(message?: amqp.Message | null): void {
       let rejection: Error | undefined;
       let success = false;
 
-      if (error) {
-        rejection = error;
-      } else if (!message) {
+      if (!message) {
         rejection = new PullError('Cancelled by remote server');
       } else if (received.has(message.properties.messageId)) {
         rejection = new DuplicatedMessage(
@@ -274,59 +271,51 @@ export class AMQPConnector
         success = checkMessage(message, checkOptions);
       }
 
-      if (closing) {
-        promise = promise.then(async (o) => {
-          const { v } = o;
-          let { e } = o;
-          if (message) await channel.reject(message, true).catch(r => e = e || r);
-          return { e, v };
-        });
-      } else {
-        closing = true;
+      promise = promise.then(async (o) => {
+        if (o.v || o.e) {
+          if (message) await channel.reject(message, true).catch(() => {});
+          return o;
+        }
 
-        promise = promise.then(async (o) => {
+        if (rejection) {
+          await channel.cancel(consumerTag).catch(() => {});
+          if (message) await channel.reject(message, true).catch(() => {});
+          return { e: rejection };
+        }
 
-
-
-
-          if (message) {
-            if (success && autoAck && !errors.length) {
-              await channel
-                .ack(message)
-                .catch(e => errors.push(e));
-            }
-            values.push(message);
+        if (success && message) {
+          try {
+            await channel.cancel(consumerTag);
+            if (autoAck) await channel.ack(message);
+          } catch (e) {
+            await channel.reject(message, true).catch(() => {});
+            return { e };
           }
+          return { v: message };
+        }
 
-          if (rejection) {
-            errors.push(rejection);
-          }
+        if (message) await channel.reject(message, true).catch(() => {});
 
-          if (errors.length || !success) {
-            for (const v of values) {
-              await channel.reject(v, true).catch(() => { });
-            }
-
-          }
-
-          return e ? { e } : { v: message || v };
-        });
-      }
-    }
-
-    async function consume() {
-      return await channel.consume(
-        queue,
-        message => consumer(null, message),
-        consumeOptions,
-      ).then(async (r) => {
-        const { e, v } = await promise;
-        return { e, v, r };
+        return {};
       });
     }
 
+    async function consume() {
+      const r = await channel.consume(queue, handler, consumeOptions);
+      const { e, v } = await promise;
+      return { e, v, r };
+    }
+
     const { e, v } = Number.isFinite(cancelAt)
-      ? await withTimeout(consume, cancelAt - Date.now()).catch(e => ({ e, v: undefined }))
+      ? await withTimeout(consume, cancelAt - Date.now())
+        .catch(async (e) => {
+          promise = promise.then(async (o) => {
+            if (o.e || o.v) return o; // too late to timeout
+            await channel.cancel(consumerTag).catch(() => {});
+            return { e };
+          });
+          return await promise;
+        })
       : await consume();
 
     if (v) return v;
