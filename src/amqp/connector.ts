@@ -5,12 +5,11 @@ import * as LRUCache from 'lru-cache';
 import { MessageQueueConnector, ResultMessage } from '../types';
 import { ConnectionManager, ConnectionManagerOptions } from '../base';
 import { TimeoutError, PullError } from '../errors';
-import { PromiseAccumulator, omit, objectKey, adler32, withTimeout } from '../utils';
+import { omit, objectKey, adler32, withTimeout, awaitWithErrorEvents } from '../utils';
 
 import { resolveConnection } from './utils';
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
 import { AMQPDriverConnection, Omit } from './types';
-import { resolve } from 'url';
 
 export interface AMQPConnectorOptions {
   name: string;
@@ -246,13 +245,12 @@ export class AMQPConnector
     const checkMessage = this.checkMessage.bind(this);
     const { consumerTag } = consumeOptions;
     const received = new Set();
-    let succeed: () => void;
-    const success = new Promise(r => succeed = r);
-    let result:
-      Promise<{ e?: Error, v?: amqp.ConsumeMessage, r?: amqp.Replies.Consume }>
-      = Promise.resolve({});
+    let pending: Promise<boolean> = Promise.resolve(true);
 
-    function handler(message?: amqp.Message | null): void {
+    function handler(
+      message: amqp.Message | null,
+      callback: (e: Error | null, v?: amqp.ConsumeMessage) => void,
+    ): void {
       let rejection: Error | undefined;
       let success = false;
 
@@ -269,57 +267,48 @@ export class AMQPConnector
         success = checkMessage(message, checkOptions);
       }
 
-      result = result.then(async (o) => {
-        if (o.v || o.e) {
+      pending = pending.then(async (pending) => {
+        if (!pending) {
           if (message) await channel.reject(message, true).catch(() => {});
-          return o;
+          return false;
         }
 
         if (rejection) {
           await channel.cancel(consumerTag).catch(() => {});
           if (message) await channel.reject(message, true).catch(() => {});
-          return { e: rejection };
+          callback(rejection);
+          return false;
         }
 
         if (success && message) {
           try {
             await channel.cancel(consumerTag);
             if (autoAck) await channel.ack(message);
+            callback(null, message); // end waiting, end timeout
           } catch (e) {
             await channel.reject(message, true).catch(() => {});
-            return { e };
+            callback(e);
           }
-          succeed(); // end waiting, end timeout
-          return { v: message };
+          return false;
         }
-
         if (message) await channel.reject(message, true).catch(() => {});
-
-        return {};
+        return true;
       });
-    }
-
-    async function consume() {
-      await channel.consume(queue, handler, consumeOptions);
-      await success;
     }
 
     try {
       // consume
-      if (Number.isFinite(cancelAt)) await withTimeout(consume, cancelAt - Date.now());
-      else await consume();
+      const consume = () => channel.consume<amqp.ConsumeMessage>(queue, handler, consumeOptions);
+      const result = Number.isFinite(cancelAt)
+        ? await withTimeout(consume, cancelAt - Date.now())
+        : await consume();
+      await pending;
+      return result;
     } catch (e) {
-      // integrate error handling into promise chain
-      result = result.then(async (o) => {
-        if (o.e || o.v) return o; // too late to timeout
-        await channel.cancel(consumerTag).catch(() => {});
-        return { e };
-      });
+      pending = pending.then(() => false); // stop accepting messages
+      await pending;
+      throw e;
     }
-
-    const { e, v } = await result;
-    if (v) return v;
-    throw e || new Error('Runtime error, no result from consume');
   }
 
   /**

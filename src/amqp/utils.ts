@@ -1,7 +1,9 @@
 import * as url from 'url';
 import { Options } from 'amqplib';
 
-import { resolveHost } from '../utils';
+import { resolveHost, awaitWithErrorEvents } from '../utils';
+
+import { AMQPDriverConfirmChannel } from './types';
 
 /**
  * Resolves hostname from connection string or object avoiding
@@ -31,4 +33,16 @@ export async function resolveConnection(
     ...connection,
     hostname: await resolveHost(connection.hostname || 'localhost'),
   };
+}
+
+/**
+ * Wait for promise rejecting on channel error events.
+ * @param channel
+ * @param promise
+ */
+export async function alongErrors<T>(
+  channel: AMQPDriverConfirmChannel,
+  promise: T | PromiseLike<T>,
+): Promise<T> {
+  return await awaitWithErrorEvents(channel, promise, ['close', 'error']);
 }

@@ -2,7 +2,9 @@ import * as amqp from 'amqplib';
 
 import { ConnectionManager, ConnectOptions } from '../base';
 import { AMQPDriverConnection, AMQPDriverConfirmChannel, Omit } from './types';
-import { awaitWithErrorEvents, Guard } from '../utils';
+import { Guard } from '../utils';
+
+import { alongErrors } from './utils';
 
 const connectionGuard = new Guard(); // used to circumvent amqplib race conditions
 
@@ -46,7 +48,7 @@ export class AMQPConfirmChannel
   extends ConnectionManager<AMQPDriverConfirmChannel>
   implements Omit<
     AMQPDriverConfirmChannel,
-    'publish' | // overridden as async
+    'consume' | 'publish' | // overridden
     'checkQueue' | 'assertQueue' | 'prefetch' | // managed by constructor options
     'once' | 'removeListener' | // not an EventEmitter
     'close' // renamed to disconnect
@@ -135,22 +137,14 @@ export class AMQPConfirmChannel
 
     async function checkQueue(name: string) {
       if (!queueFilter.has(name)) {
-        await awaitWithErrorEvents(
-          channel,
-          channel.checkQueue(name),
-          ['close', 'error'],
-        );
+        await alongErrors(channel, channel.checkQueue(name));
         queueFilter.add(name);
       }
     }
 
     async function assertQueue(name: string, assertion?: amqp.Options.AssertQueue) {
       if (!queueFilter.has(name)) {
-        await awaitWithErrorEvents(
-          channel,
-          channel.assertQueue(name, assertion),
-          ['close', 'error'],
-        );
+        await alongErrors(channel, channel.assertQueue(name, assertion));
         queueFilter.add(name);
       }
     }
@@ -211,11 +205,7 @@ export class AMQPConfirmChannel
     while (true) {
       const channel = await this.autoconnect(name);
       try {
-        const result = await awaitWithErrorEvents<T>(
-          channel,
-          channel[name].apply(channel, args),
-          ['close', 'error'],
-        );
+        const result = await alongErrors<T>(channel, channel[name].apply(channel, args));
         if (name === 'get' && !result) this.discardChannel(channel); // amqplib bug workaround
         return result;
       } catch (e) {
@@ -234,17 +224,18 @@ export class AMQPConfirmChannel
   ): Promise<boolean> {
     while (true) {
       const channel = await this.autoconnect('publish');
+      const promise = new Promise<boolean>((resolve, reject) => {
+        try {
+          channel.publish(
+            exchange, routingKey, content, options,
+            (e: any) => e ? reject(e) : resolve(),
+          );
+        } catch (e) {
+          reject(e);
+        }
+      });
       try {
-        return await awaitWithErrorEvents<boolean>(
-          channel,
-          new Promise(
-            (resolve, reject) => channel.publish(
-              exchange, routingKey, content, options,
-              (err: any) => err ? reject(err) : resolve(),
-            ),
-          ),
-          ['close', 'error'],
-        );
+        return await alongErrors(channel, promise);
       } catch (e) {
         this.discardChannel(channel, e); // errors break channel
         if (!this.retryable(e, 'publish')) throw e;
@@ -260,12 +251,34 @@ export class AMQPConfirmChannel
     return await this.operation<amqp.Replies.DeleteQueue>('deleteQueue', queue, options);
   }
 
-  async consume(
+  async consume<V>(
     queue: string,
-    onMessage: (msg: amqp.Message | null) => any,
+    onMessage: (msg: amqp.Message | null, callback: (err: any, v?: V) => void) => any,
     options?: amqp.Options.Consume,
-  ): Promise<amqp.Replies.Consume> {
-    return await this.operation<amqp.Replies.Consume>('consume', queue, onMessage, options);
+  ): Promise<V> {
+    while (true) {
+      const channel = await this.autoconnect('publish');
+      const promise = new Promise<V>((resolve, reject) => {
+        try {
+          let consume: amqp.Replies.Consume;
+          const callback = (e: any, v: V) => Promise
+            .resolve(channel.cancel(consume.consumerTag))
+            .catch(() => {})
+            .then(() => e ? reject(e) : resolve(v));
+          channel
+            .consume(queue, m => onMessage(m, callback), options)
+            .then(reply => consume = reply, reject);
+        } catch (e) {
+          reject(e);
+        }
+      });
+      try {
+        return await alongErrors(channel, promise);
+      } catch (e) {
+        this.discardChannel(channel, e); // errors break channel
+        if (!this.retryable(e, 'publish')) throw e;
+      }
+    }
   }
 
   async get(
