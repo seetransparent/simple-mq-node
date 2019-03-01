@@ -10,6 +10,7 @@ import { PromiseAccumulator, omit, objectKey, adler32, withTimeout } from '../ut
 import { resolveConnection } from './utils';
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
 import { AMQPDriverConnection, Omit } from './types';
+import { resolve } from 'url';
 
 export interface AMQPConnectorOptions {
   name: string;
@@ -204,35 +205,30 @@ export class AMQPConnector
     checkOptions: CheckOptions;
   }): Promise<amqp.GetMessage | null> {
     const received = new Set();
-    const promises: PromiseLike<void>[] = [];
-    try {
-      for (
-        let message: amqp.GetMessage | false;
-        message = await channel.get(queue, getOptions);
-      ) {
-        if (this.checkMessage(message, checkOptions)) {
-          if (autoAck) promises.push(channel.ack(message));
-          return message;
-        }
-
-        promises.push(channel.reject(message, true)); // requeue
-
-        if (Date.now() > cancelAt) {
-          throw new TimeoutError('Timeout reached');
-        }
-
-        if (received.has(message.properties.messageId)) {
-          throw new DuplicatedMessage(
-            `Unwanted message ${message.properties.messageId}`
-            + (message.properties.type ? ` (${message.properties.type})` : '')
-            + ` found twice on ${queue}`,
-          );
-        }
-
-        received.add(message.properties.messageId);
+    for (
+      let message: amqp.GetMessage | false;
+      message = await channel.get(queue, getOptions);
+    ) {
+      if (this.checkMessage(message, checkOptions)) {
+        if (autoAck) await channel.ack(message);
+        return message;
       }
-    } finally {
-      await Promise.all(promises);
+
+      await channel.reject(message, true); // requeue
+
+      if (Date.now() > cancelAt) {
+        throw new TimeoutError(`Timeout reached at ${cancelAt}`);
+      }
+
+      if (received.has(message.properties.messageId)) {
+        throw new DuplicatedMessage(
+          `Unwanted message ${message.properties.messageId}`
+          + (message.properties.type ? ` (${message.properties.type})` : '')
+          + ` found twice on ${queue}`,
+        );
+      }
+
+      received.add(message.properties.messageId);
     }
     return null;
   }
@@ -250,7 +246,9 @@ export class AMQPConnector
     const checkMessage = this.checkMessage.bind(this);
     const { consumerTag } = consumeOptions;
     const received = new Set();
-    let promise:
+    let succeed: () => void;
+    const success = new Promise(r => succeed = r);
+    let result:
       Promise<{ e?: Error, v?: amqp.ConsumeMessage, r?: amqp.Replies.Consume }>
       = Promise.resolve({});
 
@@ -271,7 +269,7 @@ export class AMQPConnector
         success = checkMessage(message, checkOptions);
       }
 
-      promise = promise.then(async (o) => {
+      result = result.then(async (o) => {
         if (o.v || o.e) {
           if (message) await channel.reject(message, true).catch(() => {});
           return o;
@@ -291,6 +289,7 @@ export class AMQPConnector
             await channel.reject(message, true).catch(() => {});
             return { e };
           }
+          succeed(); // end waiting, end timeout
           return { v: message };
         }
 
@@ -301,25 +300,26 @@ export class AMQPConnector
     }
 
     async function consume() {
-      const r = await channel.consume(queue, handler, consumeOptions);
-      const { e, v } = await promise;
-      return { e, v, r };
+      await channel.consume(queue, handler, consumeOptions);
+      await success;
     }
 
-    const { e, v } = Number.isFinite(cancelAt)
-      ? await withTimeout(consume, cancelAt - Date.now())
-        .catch(async (e) => {
-          promise = promise.then(async (o) => {
-            if (o.e || o.v) return o; // too late to timeout
-            await channel.cancel(consumerTag).catch(() => {});
-            return { e };
-          });
-          return await promise;
-        })
-      : await consume();
+    try {
+      // consume
+      if (Number.isFinite(cancelAt)) await withTimeout(consume, cancelAt - Date.now());
+      else await consume();
+    } catch (e) {
+      // integrate error handling into promise chain
+      result = result.then(async (o) => {
+        if (o.e || o.v) return o; // too late to timeout
+        await channel.cancel(consumerTag).catch(() => {});
+        return { e };
+      });
+    }
 
+    const { e, v } = await result;
     if (v) return v;
-    throw e;
+    throw e || new Error('Runtime error, no result from consume');
   }
 
   /**
@@ -502,6 +502,9 @@ export class AMQPConnector
           getOptions: {
             noAck: options.pull ? options.pull.noAck : false,
           },
+        }).catch(async (e) => {
+          if (e instanceof DuplicatedMessage) return console.warn(e);
+          throw e;
         })
         || await this.consumeOnce({
           ...commonOptions,
@@ -509,16 +512,21 @@ export class AMQPConnector
             consumerTag,
             ...omit(options.pull, ['correlationId', 'autoAck']),
           },
+        }).catch(async (e) => {
+          if (e instanceof DuplicatedMessage) return console.warn(e);
+          throw e;
         })
+        || await (async () => {
+          const timeout = cancelAt - Date.now();
+          if (Number.isFinite(timeout) && timeout > 1) { // do not retry without timeout
+            const delay = timeout > 20 ? timeout / 2 : 0;
+            if (delay) await new Promise(r => setTimeout(r, delay));
+            return await this.pull(queue, type, { ...options, timeout: timeout - delay });
+          }
+          throw new TimeoutError(`Timeout at ${cancelAt}`);
+        })()
       );
     } catch (e) {
-      const now = Date.now();
-      if (e instanceof DuplicatedMessage && cancelAt > now) {
-        console.warn(e);
-        const timeout = cancelAt - now;
-        await new Promise(r => setTimeout(r, Math.min(timeout, 10)));
-        return await this.pull(queue, type, { ...options, timeout });
-      }
       if (e instanceof TimeoutError) {
         throw new TimeoutError(`Timeout after ${options.timeout}ms`);
       }

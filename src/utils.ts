@@ -91,6 +91,7 @@ export async function withTimeout<T>(
   timeout: number,
   cleanup?: (v: T) => PromiseLike<void> | void,
 ): Promise<T> {
+  if (timeout < 1) throw new TimeoutError('Timeout after 0ms'); // shortcut
   return await new Promise<T>((resolve, reject) => {
     let pending = true;
     function cback(error: Error | null, result?: T) {
