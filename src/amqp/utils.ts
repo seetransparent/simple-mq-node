@@ -44,5 +44,5 @@ export async function alongErrors<T>(
   channel: AMQPDriverConfirmChannel,
   promise: T | PromiseLike<T>,
 ): Promise<T> {
-  return await awaitWithErrorEvents(channel, promise, ['close', 'error']);
+  return await awaitWithErrorEvents(channel, promise, ['error', 'close']);
 }

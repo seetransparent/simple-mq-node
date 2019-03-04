@@ -67,21 +67,25 @@ export async function awaitWithErrorEvents<T>(
 ): Promise<T> {
   return await new Promise<T>((resolve, reject) => {
     let finished = false;
+    const registry: { [event: string]: (e: any) => void } = {};
     function callback(err?: Error | null, result?: T) {
       if (!finished) {
         finished = true;
-        errorEvents.forEach(name => emitter.removeListener(name, rejection));
+        for (const [name, handler] of Object.entries(registry)) {
+          emitter.removeListener(name, handler);
+        }
         if (err) reject(err);
         else resolve(result);
       }
     }
-    function rejection(err?: Error) {
-      callback(err || new Error('Unexpected channel error'));
-    }
-    errorEvents.forEach(name => emitter.once(name, rejection));
+    errorEvents.forEach((name) => {
+      const handler = (e: any) => callback(e || new Error(`Unexpected ${name} event`));
+      registry[name] = handler;
+      emitter.once(name, handler);
+    });
     Promise.resolve<T>(promise).then(
       v => callback(null, v),
-      e => rejection(e),
+      e => callback(e || new Error('Unexpected rejection')),
     );
   });
 }

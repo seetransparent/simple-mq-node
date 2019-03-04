@@ -203,7 +203,6 @@ export class AMQPConnector
     getOptions: amqp.Options.Get;
     checkOptions: CheckOptions;
   }): Promise<amqp.GetMessage | null> {
-    console.log('getMessage');
     const received = new Set();
     for (
       let message: amqp.GetMessage | false;
@@ -243,7 +242,6 @@ export class AMQPConnector
     consumeOptions: amqp.Options.Consume & { consumerTag: string };
     checkOptions: CheckOptions;
   }): Promise<amqp.ConsumeMessage> {
-    console.log('consumeOnce');
     const checkMessage = this.checkMessage.bind(this);
     const received = new Set();
     const unwanted: amqp.ConsumeMessage[] = [];

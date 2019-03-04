@@ -215,16 +215,54 @@ describe('amqp', () => {
         console.warn = consoleWarn;
       });
 
-      it('propagates network errors', async () => {
+      it('propagates server close', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connect: () => connection,
+        });
+
+        setTimeout(() => connection.getQueue('', 'q').closeConsumers(), 50);
+
+        const promise = connector.pull('q', 'correct', { timeout: 100 });
+        await expect(promise).rejects.toThrowError(errors.PullError);
+        await expect(promise).rejects.toThrowError(/closed by remote server/i);
+        await connector.disconnect();
+      });
+
+      it('propagates random errors', async () => {
         const connection = new mock.AMQPMockConnection();
         const connector = new lib.AMQPConnector({
           name: 'test',
           connect: () => connection,
         });
         const error = new Error('Random network error');
-        const promise = connector.pull('q', 'correct', { timeout: 100 });
-        connection.bork(error);
+        const promise = connector.pull('q', 't', { timeout: 100 });
+
+        setTimeout(
+          async () => {
+            // select the working channel
+            let channel = connection.channels.filter(c => c.alive)[0];
+            while (!channel || !channel.listenerCount('error')) {
+              console.log(connection.channels.length);
+              await new Promise(r => setTimeout(r, 10));
+              channel = connection.channels.filter(c => c.alive)[0];
+            }
+
+            [ // register errors
+              'connect',
+              'createConfirmChannel',
+              'consume',
+            ].forEach(op => connection.failing[op] = error);
+
+            channel.emit('error', error);
+          },
+          10,
+        );
+
         await expect(promise).rejects.toBe(error);
+        await connector.disconnect();
+        console.log('pretty damn ok(ish)');
       });
     });
 

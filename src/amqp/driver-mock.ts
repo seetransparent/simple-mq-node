@@ -79,7 +79,7 @@ export class AMQPMockQueue {
     return this.consumers.splice(0, this.consumers.length, ...alive)[0];
   }
 
-  abortConsumers() {
+  closeConsumers() {
     this.consumers
       .splice(0, this.consumers.length)
       .forEach(consumer => consumer.handler(null));
@@ -91,7 +91,6 @@ export class AMQPMockBase extends events.EventEmitter {
   public failing: { [name: string]: Error } = {};
 
   wannaFail(method: string) {
-    if (this.failing['*']) throw this.failing['*'];
     if (this.failing[method]) throw this.failing[method];
   }
 }
@@ -120,19 +119,6 @@ implements AMQPDriverConnection {
     this.channels.push(channel);
     this.createdChannels += 1;
     return channel;
-  }
-
-  bork(error: Error) {
-    this.failing['*'] = error;
-    for (const channel of this.channels) {
-      if (!channel.listenerCount('error')) continue;
-      channel.emit('error', error);
-    }
-    Object.values(this.queues).forEach(queue => queue.abortConsumers());
-  }
-
-  unbork() {
-    delete this.failing['*'];
   }
 
   getQueue(
@@ -217,11 +203,15 @@ implements AMQPDriverConfirmChannel {
     this.closed = false;
     this.once('error', (e) => {
       this.errored = e;
-      if (!this.closed) this.emit('close');
+      if (!this.closed) process.nextTick(() => this.emit('close'));
     });
     this.once('close', () => {
       this.closed = true;
     });
+  }
+
+  get alive() {
+    return !this.errored && !this.closed;
   }
 
   wannaFail(method: string) {

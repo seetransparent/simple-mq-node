@@ -3,6 +3,7 @@ import * as amqp from 'amqplib';
 import { ConnectionManager, ConnectOptions } from '../base';
 import { AMQPDriverConnection, AMQPDriverConfirmChannel, Omit } from './types';
 import { Guard } from '../utils';
+import { PullError } from '../errors';
 
 import { alongErrors } from './utils';
 
@@ -272,7 +273,7 @@ export class AMQPConfirmChannel
             } else if (message) {
               onMessage(message, callback);
             } else {
-              callback(new Error('Consume closed by remote server'));
+              callback(new PullError('Consume closed by remote server'));
             }
           }
           function callback(error?: any, result?: PromiseLike<V> | V) {
