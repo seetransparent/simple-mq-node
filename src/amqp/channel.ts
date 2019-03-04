@@ -253,7 +253,7 @@ export class AMQPConfirmChannel
 
   async consume<V>(
     queue: string,
-    onMessage: (msg: amqp.Message | null, callback: (err: any, v?: V) => void) => any,
+    onMessage: (msg: amqp.Message, callback: (err: any, v?: PromiseLike<V> | V) => void) => any,
     options?: amqp.Options.Consume,
   ): Promise<V> {
     while (true) {
@@ -261,12 +261,30 @@ export class AMQPConfirmChannel
       const promise = new Promise<V>((resolve, reject) => {
         try {
           let consume: amqp.Replies.Consume;
-          const callback = (e: any, v: V) => Promise
-            .resolve(channel.cancel(consume.consumerTag))
-            .catch(() => {})
-            .then(() => e ? reject(e) : resolve(v));
+          let canceling: Promise<any>;
+          function handler(message: amqp.ConsumeMessage) {
+            if (canceling) {
+              if (message) {
+                canceling = canceling
+                  .then(() => channel.reject(message, true))
+                  .catch(() => {});
+              }
+            } else if (message) {
+              onMessage(message, callback);
+            } else {
+              callback(new Error('Consume closed by remote server'));
+            }
+          }
+          function callback(error?: any, result?: PromiseLike<V> | V) {
+            const promise = canceling = Promise
+              .resolve(channel.cancel(consume.consumerTag))
+              .catch(() => {});
+            promise
+              .then(() => canceling) // await other tasks
+              .then(() => error ? reject(error) : resolve(result));
+          }
           channel
-            .consume(queue, m => onMessage(m, callback), options)
+            .consume(queue, handler, options)
             .then(reply => consume = reply, reject);
         } catch (e) {
           reject(e);

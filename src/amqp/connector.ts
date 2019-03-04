@@ -245,71 +245,44 @@ export class AMQPConnector
   }): Promise<amqp.ConsumeMessage> {
     console.log('consumeOnce');
     const checkMessage = this.checkMessage.bind(this);
-    const { consumerTag } = consumeOptions;
     const received = new Set();
-    let pending: Promise<boolean> = Promise.resolve(true);
+    const unwanted: amqp.ConsumeMessage[] = [];
 
     function handler(
-      message: amqp.Message | null,
-      callback: (e: Error | null, v?: amqp.ConsumeMessage) => void,
+      message: amqp.Message,
+      callback: (e?: Error | null, v?: amqp.ConsumeMessage) => void,
     ): void {
-      let rejection: Error | undefined;
-      let success = false;
-
-      if (!message) {
-        rejection = new PullError('Cancelled by remote server');
-      } else if (received.has(message.properties.messageId)) {
-        rejection = new DuplicatedMessage(
-          `Unwanted message ${message.properties.messageId}`
-          + (message.properties.type ? ` (${message.properties.type})` : '')
-          + ` found twice on ${queue}`,
+      if (received.has(message.properties.messageId)) {
+        unwanted.push(message);
+        callback(
+          new DuplicatedMessage(
+            `Unwanted message ${message.properties.messageId}`
+            + (message.properties.type ? ` (${message.properties.type})` : '')
+            + ` found twice on ${queue}`,
+          ),
         );
       } else {
         received.add(message.properties.messageId);
-        success = checkMessage(message, checkOptions);
+        if (checkMessage(message, checkOptions)) callback(null, message);
+        else unwanted.push(message);
       }
-
-      pending = pending.then(async (pending) => {
-        if (!pending) {
-          if (message) await channel.reject(message, true).catch(() => {});
-          return false;
-        }
-
-        if (rejection) {
-          await channel.cancel(consumerTag).catch(() => {});
-          if (message) await channel.reject(message, true).catch(() => {});
-          callback(rejection);
-          return false;
-        }
-
-        if (success && message) {
-          try {
-            await channel.cancel(consumerTag);
-            if (autoAck) await channel.ack(message);
-            callback(null, message); // end waiting, end timeout
-          } catch (e) {
-            await channel.reject(message, true).catch(() => {});
-            callback(e);
-          }
-          return false;
-        }
-        if (message) await channel.reject(message, true).catch(() => {});
-        return true;
-      });
     }
 
+    let result: amqp.ConsumeMessage | undefined;
     try {
-      // consume
       const consume = () => channel.consume<amqp.ConsumeMessage>(queue, handler, consumeOptions);
-      const result = Number.isFinite(cancelAt)
+      result = Number.isFinite(cancelAt)
         ? await withTimeout(consume, cancelAt - Date.now())
         : await consume();
-      await pending;
+      if (autoAck) await channel.ack(result);
       return result;
     } catch (e) {
-      pending = pending.then(() => false); // stop accepting messages
-      await pending;
+      if (result) unwanted.push(result);
       throw e;
+    } finally {
+      for (const message of unwanted) {
+        await channel.reject(message, true).catch(() => {});
+      }
     }
   }
 
