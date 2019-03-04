@@ -4,8 +4,8 @@ import * as LRUCache from 'lru-cache';
 
 import { MessageQueueConnector, ResultMessage } from '../types';
 import { ConnectionManager, ConnectionManagerOptions } from '../base';
-import { TimeoutError, PullError } from '../errors';
-import { omit, objectKey, adler32, withTimeout, awaitWithErrorEvents } from '../utils';
+import { TimeoutError } from '../errors';
+import { omit, objectKey, adler32, withTimeout } from '../utils';
 
 import { resolveConnection } from './utils';
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
