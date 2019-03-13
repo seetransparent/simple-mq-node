@@ -117,11 +117,12 @@ export class AMQPConnector
       max: opts.channelCacheSize,
       noDisposeOnSet: true,
       dispose: (_, channel) => {
-        const channels = this.channelsByType[channel.channelType || ''] || [];
+        const channelType = channel.channelType || '';
+        const channels = this.channelsByType[channelType] || [];
         const index = channels.indexOf(channel);
         if (index > -1) {
           if (channels.length > 1) channels.splice(index, 1);
-          else delete this.channelsByType[channel.channelType || ''];
+          else delete this.channelsByType[channelType];
           channel.disconnect(); // only disconnect if fully tracked (see pullChannel)
         }
       },
