@@ -1,7 +1,7 @@
 import * as amqp from 'amqplib';
 
-import { ConnectionManager, ConnectOptions } from '../base';
-import { AMQPDriverConnection, AMQPDriverConfirmChannel, Omit } from './types';
+import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
+import { AMQPDriverConfirmChannel, Omit } from './types';
 import { Guard } from '../utils';
 import { PullError } from '../errors';
 
@@ -19,8 +19,9 @@ export interface AMQPQueueFilter {
   delete: (name: string) => void;
 }
 
-export interface AMQPConfirmChannelOptions {
-  manager: ConnectionManager<AMQPDriverConnection>;
+export interface AMQPConfirmChannelOptions
+  extends Omit<ConnectionManagerOptions<AMQPDriverConfirmChannel>, 'retries' | 'timeout' | 'delay'>
+{
   check?: string[];
   assert?: {
     [queue: string]: AMQPQueueAssertion;
@@ -29,6 +30,7 @@ export interface AMQPConfirmChannelOptions {
   channelId?: string;
   channelType?: string;
   inactivityTime?: number;
+  connectionTimeout?: number;
   connectionRetries?: number;
   connectionDelay?: number;
   queueFilter?: AMQPQueueFilter;
@@ -61,8 +63,9 @@ export class AMQPConfirmChannel
 
   constructor(options: AMQPConfirmChannelOptions) {
     super({
-      connect: () => this.options.manager.connect().then(c => c.createConfirmChannel()),
-      disconnect: c => Promise.resolve(c.close()).catch(() => {}), // ignore close errors
+      connect: options.connect,
+      disconnect: options.disconnect,
+      timeout: options.connectionTimeout,
       retries: options.connectionRetries,
       delay: options.connectionDelay,
     });

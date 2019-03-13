@@ -52,11 +52,10 @@ export class ConnectionManager<T> {
   }
 
   protected withConnectionDefaults<T extends AnyObject>(options: T): FullConnectOptions & T {
-    const delay = Number.isFinite(options.delay as number) ? options.delay || 0 : 100;
     return {
-      timeout: 5000,
       ...(options as any),
-      delay,
+      delay: Number.isFinite(options.delay as number) ? options.delay : 100,
+      timeout: (options.timeout === 0) ? 0 : options.timeout || 5000,
       retries: Math.max(options.retries || 0, -1),
       banPeriod: Math.max(options.banPeriod || 5000, 0),
     };

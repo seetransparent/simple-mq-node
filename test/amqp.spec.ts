@@ -362,8 +362,9 @@ describe('amqp', () => {
         await connector.push('q', 'msg', Buffer.from('test'));
         await connector.push('q', 'msg', Buffer.from('test'));
         await connector.push('q', 'msg', Buffer.from('test'));
-        expect(connection.channels).toHaveLength(1);
         await connector.push('w', 'msg', Buffer.from('test'));
+        expect(connection.createdChannels).toBe(4); // x2 due queue checkQueues
+        expect(connection.closedChannels).toBe(2); // 2 due checkQueues
         expect(connection.channels).toHaveLength(2);
       });
 

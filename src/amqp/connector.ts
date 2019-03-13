@@ -40,7 +40,11 @@ interface CheckOptions extends Pick<amqp.MessageProperties, 'correlationId' | 't
 class DuplicatedMessage extends Error { }
 
 export interface AMQPOperationChannelOptions
-  extends Omit<AMQPConfirmChannelOptions, 'manager'> { }
+  extends Omit<AMQPConfirmChannelOptions, 'connect' | 'disconnect'>
+{
+  connect?: AMQPConfirmChannelOptions['connect'];
+  disconnect?: AMQPConfirmChannelOptions['disconnect'];
+}
 
 export interface AMQPOperationOptions {
   timeout?: number;
@@ -79,8 +83,8 @@ export class AMQPConnector
   protected options: AMQPConnectorFullOptions;
   protected appId: string;
 
-  protected channelsById: LRUCache.Cache<string | null, AMQPConfirmChannel>;
-  protected channelsByType: LRUCache.Cache<string | null, Set<AMQPConfirmChannel>>;
+  protected channelsById: LRUCache.Cache<string, AMQPConfirmChannel>;
+  protected channelsByType: { [type: string]: AMQPConfirmChannel[]};
   protected knownQueues: LRUCache.Cache<string, boolean>;
 
   constructor(options: AMQPConnectorOptions) {
@@ -113,34 +117,23 @@ export class AMQPConnector
       max: opts.channelCacheSize,
       noDisposeOnSet: true,
       dispose: (_, channel) => {
-        const { channelType } = channel;
-        const channelsOfType = this.channelsByType.get(channelType);
-        if (channelsOfType) {
-          // deleting first to prevent race condition
-          channelsOfType.delete(channel);
-          if (!channelsOfType.size) this.channelsByType.del(channelType);
-        }
-        channel.disconnect();
-      },
-    });
-    this.channelsByType = new LRUCache({
-      max: opts.channelCacheSize,
-      noDisposeOnSet: true,
-      dispose: (_, channelsOfType) => {
-        for (const channel of channelsOfType) {
-          // deferred sync to prevent race condition
-          process.nextTick(() => this.channelsById.del(channel.channelId));
-          channel.disconnect();
+        const channels = this.channelsByType[channel.channelType || ''] || [];
+        const index = channels.indexOf(channel);
+        if (index > -1) {
+          if (channels.length > 1) channels.splice(index, 1);
+          else delete this.channelsByType[channel.channelType || ''];
+          channel.disconnect(); // only disconnect if fully tracked (see pullChannel)
         }
       },
     });
+    this.channelsByType = {};
     this.knownQueues = new LRUCache({ max: opts.queueCacheSize });
   }
 
   disconnect(): Promise<void> {
     const promise = super.disconnect();
     this.channelsById.reset();
-    this.channelsByType.reset();
+    this.channelsByType = {};
     this.knownQueues.reset();
     return promise;
   }
@@ -331,38 +324,27 @@ export class AMQPConnector
     options: AMQPOperationChannelOptions = {},
   ): Promise<AMQPConfirmChannel> {
     return new AMQPConfirmChannel({
-      manager: this,
-      connectionRetries: this.options.connectionRetries,
-      connectionDelay: this.options.connectionDelay,
       queueFilter: {
         add: name => this.knownQueues.set(name, true),
         has: name => !!this.knownQueues.get(name),
         delete: name => this.knownQueues.del(name),
       },
+      connect: () => this.connect().then(c => c.createConfirmChannel()),
+      disconnect: c => Promise.resolve(c.close()).catch(() => { }), // ignore close errors
       ...options,
     });
   }
 
   /**
-   * (stub) Pull channel from channel pool, or create a new one
+   * Pull channel from channel pool, or create a new one if none is available.
    * @param options
    */
-  protected async pullChannel(
-    options: AMQPOperationChannelOptions = {},
-  ): Promise<AMQPConfirmChannel> {
+  async pullChannel(options: AMQPOperationChannelOptions = {}): Promise<AMQPConfirmChannel> {
     const channelType = options.channelType || adler32(objectKey(options)).toString(16);
 
     // pop from cache
-    const channelsOfType = this.channelsByType.get(channelType);
-    if (channelsOfType) {
-      const [channel] = channelsOfType;
-      if (channel) {
-        if (channelsOfType.size === 1) this.channelsByType.del(channelType);
-        else channelsOfType.delete(channel);
-        this.channelsById.del(channel.channelId);
-        return channel;
-      }
-    }
+    const channels = this.channelsByType[channelType] || [];
+    if (channels.length) return channels.pop() as AMQPConfirmChannel;
 
     // create new
     const channelId = options.channelId || this.genId('channelId', channelType);
@@ -370,19 +352,18 @@ export class AMQPConnector
   }
 
   /**
-   * (stub) Push channel to channel pool
+   * Push channel to channel pool
    * @param channel
    */
   protected async pushChannel(channel: AMQPConfirmChannel): Promise<void> {
     if (channel.channelId && channel.channelType) {
-      // cache this channel
+      // cacheable: cache
       const { channelId, channelType } = channel;
-      const channelsOfType = this.channelsByType.get(channelType);
-      if (channelsOfType) channelsOfType.add(channel);
-      else this.channelsByType.set(channelType, new Set([channel]));
+      if (this.channelsByType[channelType]) this.channelsByType[channelType].push(channel);
+      else this.channelsByType[channelType] = [channel];
       this.channelsById.set(channelId, channel);
     } else {
-      // uncacheable, disconnect
+      // uncacheable: disconnect
       await channel.disconnect();
     }
   }
