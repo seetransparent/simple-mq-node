@@ -159,7 +159,7 @@ export class AMQPConfirmChannel
         await checkQueue(name);
       }
       for (const [name, assertion] of Object.entries(this.options.assert)) {
-        if (assertion.conflict !== 'ignore') {
+        if (assertion.conflict === 'raise') {
           await assertQueue(name, assertion);
           continue;
         }
