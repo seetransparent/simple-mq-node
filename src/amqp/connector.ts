@@ -5,7 +5,7 @@ import * as LRUCache from 'lru-cache';
 import { MessageQueueConnector, ResultMessage } from '../types';
 import { ConnectionManager, ConnectionManagerOptions } from '../base';
 import { TimeoutError } from '../errors';
-import { omit, objectKey, adler32, withTimeout } from '../utils';
+import { omit, objectKey, adler32, withTimeout, sleep } from '../utils';
 
 import { resolveConnection } from './utils';
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
@@ -470,7 +470,7 @@ export class AMQPConnector
           const timeout = cancelAt - Date.now();
           if (Number.isFinite(timeout) && timeout > 1) { // do not retry without timeout
             const delay = timeout > 20 ? timeout / 2 : 0;
-            if (delay) await new Promise(r => setTimeout(r, delay));
+            if (delay) await sleep(delay);
             return await this.pull(queue, type, { ...options, timeout: timeout - delay });
           }
           throw new TimeoutError(`Timeout at ${cancelAt}`);

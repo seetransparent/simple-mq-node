@@ -1,5 +1,5 @@
 import { AnyObject } from './types';
-import { PromiseAccumulator, withTimeout } from './utils';
+import { PromiseAccumulator, withTimeout, sleep } from './utils';
 import { TimeoutError } from './errors';
 
 const bannedConnectionsByConstructor: Map<Function, Set<any>> = new Map();
@@ -81,7 +81,7 @@ export class ConnectionManager<T> {
           if (e instanceof TimeoutError) throw e;  // do not retry timeout errors
           lastError = e;
         }
-        await new Promise(r => setTimeout(r, delay));
+        await sleep(delay);
       }
       throw lastError;
     } finally {
@@ -99,7 +99,7 @@ export class ConnectionManager<T> {
     const alreadyBanned = banned.has(this.connection);
     if (!alreadyBanned) banned.add(connection);
 
-    return new Promise(r => setTimeout(r, delay))
+    return sleep(delay)
       .then(() => disconnect(connection))
       .catch(() => {}) // TODO: optional logging
       .then(() => {
