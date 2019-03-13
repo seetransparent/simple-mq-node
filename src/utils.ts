@@ -113,6 +113,10 @@ export async function withTimeout<T>(
   });
 }
 
+export async function sleep(ms: number) {
+  await new Promise(r => setTimeout(r, ms));
+}
+
 export function objectKey(obj: AnyObject): string {
   const key = JSON.stringify(
     Object

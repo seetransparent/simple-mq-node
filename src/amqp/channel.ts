@@ -2,7 +2,7 @@ import * as amqp from 'amqplib';
 
 import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
 import { AMQPDriverConfirmChannel, Omit } from './types';
-import { Guard } from '../utils';
+import { Guard, sleep } from '../utils';
 import { PullError } from '../errors';
 
 import { alongErrors } from './utils';
@@ -159,20 +159,25 @@ export class AMQPConfirmChannel
         await checkQueue(name);
       }
       for (const [name, assertion] of Object.entries(this.options.assert)) {
-        if (assertion.conflict === 'ignore') {
+        if (assertion.conflict !== 'ignore') {
+          await assertQueue(name, assertion);
+          continue;
+        }
+        for (let attempts = 10; attempts; attempts -= 1) {
           try {
             await checkQueue(name);
-            continue;
+            break;
           } catch (err) {
             channel = await this.amqpChannel(options, true);
           }
           try {
             await assertQueue(name, assertion);
+            break;
           } catch (err) {
             channel = await this.amqpChannel(options, true);
           }
-        } else {
-          await assertQueue(name, assertion);
+
+          await sleep(100);
         }
       }
       return channel;

@@ -3,6 +3,7 @@ import * as errors from '../src/errors';
 import * as mock from '../src/amqp/driver-mock';
 import { AnyObject } from '../src/types';
 import { resolveConnection } from '../src/amqp/utils';
+import { sleep } from '../src/utils';
 
 describe('amqp', () => {
   describe('AMQPConnector', () => {
@@ -245,7 +246,7 @@ describe('amqp', () => {
             let channel = connection.channels.filter(c => c.alive)[0];
             while (!channel || !channel.listenerCount('error')) {
               console.log(connection.channels.length);
-              await new Promise(r => setTimeout(r, 10));
+              await sleep(10);
               channel = connection.channels.filter(c => c.alive)[0];
             }
 
