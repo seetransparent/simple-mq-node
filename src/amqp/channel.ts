@@ -113,20 +113,18 @@ export class AMQPConfirmChannel
     options: ConnectOptions,
     reconnect = false,
   ): Promise<AMQPDriverConfirmChannel> {
-    let channel: AMQPDriverConfirmChannel | undefined;
-
     if (reconnect) await this.disconnect(); // force fresh channel
 
     // force channel retrieval for known errors
-    while (!channel) {
+    while (true) {
       try {
-        channel = await connectionGuard.exec(() => super.connect(options));
+        const channel = await connectionGuard.exec(() => super.connect(options));
+        this.expiration = Date.now() + this.options.inactivityTime;
+        return channel;
       } catch (e) {
         if (!this.retryable(e, 'connect')) throw e;
       }
     }
-    this.expiration = Date.now() + this.options.inactivityTime;
-    return channel;
   }
 
   /**
@@ -152,26 +150,23 @@ export class AMQPConfirmChannel
 
     try {
       if (this.options.prefetch) {
-        await channel.prefetch(this.options.prefetch);
+        await alongErrors(channel, channel.prefetch(this.options.prefetch));
       }
       for (const name of this.options.check) {
         await checkQueue(name);
       }
       for (const [name, assertion] of Object.entries(this.options.assert)) {
-        if (this.options.queueFilter.has(name)) continue;
-
-        // optimize common case: don't care about conflicts with existing queues
         if (assertion.conflict === 'ignore') {
           try {
             await checkQueue(name);
             continue;
           } catch (err) {
-            channel = await this.amqpChannel(options);
+            channel = await this.amqpChannel(options, true);
           }
           try {
             await assertQueue(name, assertion);
           } catch (err) {
-            channel = await this.amqpChannel(options);
+            channel = await this.amqpChannel(options, true);
           }
         } else {
           await assertQueue(name, assertion);

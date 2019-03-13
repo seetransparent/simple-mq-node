@@ -114,11 +114,13 @@ export async function withTimeout<T>(
 }
 
 export function objectKey(obj: AnyObject): string {
-  const entries = Object.entries(obj);
-  entries.sort(([a], [b]) => (a < b) ? -1 : 1);
-  return JSON.stringify(
-    entries.map(([k, v]) => [k, typeof v === 'object' && !Array.isArray(v) ? objectKey(v) : v]),
+  const key = JSON.stringify(
+    Object
+      .entries(obj)
+      .sort(([a], [b]) => (a < b) ? -1 : 1)
+      .map(([k, v]) => [k, typeof v === 'object' && !Array.isArray(v) ? objectKey(v) : `v:${v}`]),
   );
+  return `o:${key}`;
 }
 
 export function adler32(data: string, sum: number = 1, base: number = 65521, nmax: number = 5552) {

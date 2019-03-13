@@ -262,7 +262,6 @@ describe('amqp', () => {
 
         await expect(promise).rejects.toBe(error);
         await connector.disconnect();
-        console.log('pretty damn ok(ish)');
       });
     });
 
@@ -380,8 +379,8 @@ describe('amqp', () => {
         await connector.push('c', 'msg', Buffer.from('test'));
         await connector.push('d', 'msg', Buffer.from('test'));
         await connector.push('e', 'msg', Buffer.from('test'));
-        expect(connection.createdChannels).toBe(5);
-        expect(connection.closedChannels).toBe(2);  // not very
+        expect(connection.createdChannels).toBe(10); // x2 due queue checkQueues
+        expect(connection.closedChannels).toBe(7); // 5 due checkQueues, 2 due cache expiration
         expect(connection.channels).toHaveLength(3);
       });
     });
