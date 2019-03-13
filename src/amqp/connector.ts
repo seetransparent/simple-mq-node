@@ -344,7 +344,11 @@ export class AMQPConnector
 
     // pop from cache
     const channels = this.channelsByType[channelType] || [];
-    if (channels.length) return channels.pop() as AMQPConfirmChannel;
+    if (channels.length) {
+      const channel = channels.pop() as AMQPConfirmChannel;
+      this.channelsById.del(channel.channelId || '');  // after pop to prevent disconnect
+      return channel;
+    }
 
     // create new
     const channelId = options.channelId || this.genId('channelId', channelType);
