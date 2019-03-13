@@ -163,22 +163,29 @@ export class AMQPConfirmChannel
           await assertQueue(name, assertion);
           continue;
         }
+
+        let queueError: Error | null | undefined;
         for (let attempts = 10; attempts; attempts -= 1) {
           try {
             await checkQueue(name);
+            queueError = null;
             break;
           } catch (err) {
+            queueError = err;
             channel = await this.amqpChannel(options, true);
           }
           try {
             await assertQueue(name, assertion);
+            queueError = null;
             break;
           } catch (err) {
+            queueError = err;
             channel = await this.amqpChannel(options, true);
           }
 
           await sleep(100);
         }
+        if (queueError) throw queueError;
       }
       return channel;
     } catch (e) {
