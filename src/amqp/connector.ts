@@ -78,10 +78,10 @@ export class AMQPConnector
   extends ConnectionManager<AMQPDriverConnection>
   implements MessageQueueConnector<Buffer, amqp.Message>
 {
-  protected uuidName: string;
   protected uuidNamespace: string;
   protected options: AMQPConnectorFullOptions;
   protected appId: string;
+  protected idCounter: number;
 
   protected channelsById: LRUCache.Cache<string, AMQPConfirmChannel>;
   protected channelsByType: { [type: string]: AMQPConfirmChannel[]};
@@ -109,9 +109,9 @@ export class AMQPConnector
       delay: options.connectionDelay,
     });
     this.options = opts;
-    this.uuidName = this.options.name || this.constructor.name;
-    this.uuidNamespace = uuid4();
-    this.appId = this.genId('app', this.uuidName, this.uuidNamespace);
+    this.uuidNamespace = `app:${uuid4()}:${this.options.name || this.constructor.name}`;
+    this.appId = `app:${this.uuidNamespace}`;
+    this.idCounter = 0;
 
     this.channelsById = new LRUCache({
       max: opts.channelCacheSize,
@@ -139,8 +139,9 @@ export class AMQPConnector
     return promise;
   }
 
-  protected genId(name: string, type?: string | null, uuid?: string | null) {
-    return [name, type, uuid || uuid4()].filter(x => x).join(':');
+  protected genId(name: string, type?: string | null) {
+    const index = this.idCounter = (this.idCounter + 1) % Number.MAX_SAFE_INTEGER;
+    return [name, type, this.uuidNamespace, index.toString(16)].filter(x => x).join(':');
   }
 
   protected messageId(type?: string | null, options?: AMQPOperationPushOptions): string {
@@ -451,7 +452,6 @@ export class AMQPConnector
             noAck: options.pull ? options.pull.noAck : false,
           },
         }).catch(async (e) => {
-          console.log(e);
           if (e instanceof DuplicatedMessage) return console.warn(e);
           throw e;
         })
@@ -462,7 +462,6 @@ export class AMQPConnector
             ...omit(options.pull, ['correlationId', 'autoAck']),
           },
         }).catch(async (e) => {
-          console.log(e);
           if (e instanceof DuplicatedMessage) return console.warn(e);
           throw e;
         })
