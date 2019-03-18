@@ -109,8 +109,8 @@ export class AMQPConnector
       delay: options.connectionDelay,
     });
     this.options = opts;
-    this.uuidNamespace = `${uuid4()}:${this.options.name || this.constructor.name}`;
-    this.appId = `app:${this.uuidNamespace}`;
+    this.uuidNamespace = uuid4();
+    this.appId = `app:${this.options.name || this.constructor.name}:${this.uuidNamespace}`;
     this.idCounter = 0;
 
     this.channelsById = new LRUCache({
@@ -174,7 +174,7 @@ export class AMQPConnector
     if (options && options.push && options.push.replyTo) {
       return options.push.replyTo;
     }
-    return this.genId('response-queue', type);
+    return this.genId('response', type);
   }
 
   protected checkMessage(
