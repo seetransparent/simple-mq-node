@@ -174,7 +174,11 @@ export class AMQPConnector
     if (options && options.push && options.push.replyTo) {
       return options.push.replyTo;
     }
-    return this.genId('response', type);
+    let queue: string;
+    do {
+      queue = this.genId('response', type);
+    } while (this.knownQueues.has(queue));
+    return queue;
   }
 
   protected checkMessage(
