@@ -109,7 +109,7 @@ export class AMQPConnector
       delay: options.connectionDelay,
     });
     this.options = opts;
-    this.uuidNamespace = `app:${uuid4()}:${this.options.name || this.constructor.name}`;
+    this.uuidNamespace = `${uuid4()}:${this.options.name || this.constructor.name}`;
     this.appId = `app:${this.uuidNamespace}`;
     this.idCounter = 0;
 
