@@ -516,7 +516,6 @@ export class AMQPConnector
         },
         // create exclusive response queue
         [responseQueue]: {
-          exclusive: true,
           durable: true,
           autoDelete: true,  // avoids zombie result queues
         },
