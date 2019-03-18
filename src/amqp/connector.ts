@@ -285,7 +285,6 @@ export class AMQPConnector
   async ping(): Promise<void> {
     const type = 'ping';
     const queue = this.responseQueue(type);
-    console.log(queue);
     const channel = await this.channel({
       assert: {
         [queue]: {

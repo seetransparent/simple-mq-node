@@ -6,6 +6,42 @@ import { resolveConnection } from '../src/amqp/utils';
 import { sleep } from '../src/utils';
 
 describe('amqp', () => {
+  describe('AMQPChannel', () => {
+    describe('retryable', () => {
+      it('detects 404 errors', () => {
+        const existing: string[] = ['myqueue'];
+        const removal: string[] = [];
+        const connection = new mock.AMQPMockConnection();
+        const channel = new lib.AMQPConfirmChannel({
+          connect: () => connection.createConfirmChannel(),
+          disconnect: c => c.close(),
+          queueFilter: {
+            has: key => existing.indexOf(key) > -1,
+            add: () => {},
+            delete: key => removal.push(key),
+          },
+        });
+        const error = new Error(
+          'Channel closed by server: 404(NOT - FOUND) with message '
+          + 'NOT_FOUND - no queue \'myqueue\' in vhost \'/\'',
+        );
+        expect(channel.retryable(error)).toBeTruthy();
+        expect(removal).toContain('myqueue');
+      });
+      it('detects concurrency error', () => {
+        const connection = new mock.AMQPMockConnection();
+        const channel = new lib.AMQPConfirmChannel({
+          connect: () => connection.createConfirmChannel(),
+          disconnect: c => c.close(),
+        });
+        const error = new Error(
+          'Connection closed: 504(CHANNEL - ERROR) with message '
+          + '"CHANNEL_ERROR - second \'channel.open\' seen"',
+        );
+        expect(channel.retryable(error)).toBeTruthy();
+      });
+    });
+  });
   describe('AMQPConnector', () => {
     describe('connect', () => {
       it('retries errors', async () => {

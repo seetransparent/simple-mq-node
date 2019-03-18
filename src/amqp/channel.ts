@@ -92,6 +92,15 @@ export class AMQPConfirmChannel
       // amqplib is buggy as hell: https://github.com/squaremo/amqp.node/issues/441
       return true;
     }
+
+    if (e.message.indexOf('NOT_FOUND - no queue')) {
+      const match = /- no queue '([^']+|\\.)+'/.exec(e.message);
+      const queue = match ? match[1] : null;
+      if (queue && this.options.queueFilter.has(queue)) {
+        this.options.queueFilter.delete(queue);
+        return true;
+      }
+    }
     return false;
   }
 
