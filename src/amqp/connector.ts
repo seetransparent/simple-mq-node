@@ -10,7 +10,6 @@ import { omit, objectKey, adler32, withTimeout, sleep } from '../utils';
 import { resolveConnection } from './utils';
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
 import { AMQPDriverConnection, Omit } from './types';
-import { print } from 'util';
 
 export interface AMQPConnectorOptions {
   name: string;
