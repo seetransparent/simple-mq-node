@@ -10,6 +10,7 @@ import { omit, objectKey, adler32, withTimeout, sleep } from '../utils';
 import { resolveConnection } from './utils';
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
 import { AMQPDriverConnection, Omit } from './types';
+import { print } from 'util';
 
 export interface AMQPConnectorOptions {
   name: string;
@@ -109,8 +110,8 @@ export class AMQPConnector
       delay: options.connectionDelay,
     });
     this.options = opts;
-    this.uuidNamespace = uuid4();
-    this.appId = `app:${this.options.name || this.constructor.name}:${this.uuidNamespace}`;
+    this.uuidNamespace = `${this.options.name || this.constructor.name}:${uuid4()}`;
+    this.appId = `app:${this.uuidNamespace}`;
     this.idCounter = 0;
 
     this.channelsById = new LRUCache({
@@ -285,6 +286,7 @@ export class AMQPConnector
   async ping(): Promise<void> {
     const type = 'ping';
     const queue = this.responseQueue(type);
+    console.log(queue);
     const channel = await this.channel({
       assert: {
         [queue]: {
