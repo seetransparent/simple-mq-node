@@ -111,7 +111,7 @@ export class AMQPConfirmChannel
   protected async autoconnect(operation: string): Promise<AMQPDriverConfirmChannel> {
     const now = Date.now();
     if (this.expiration < now && operation !== 'ack') await this.disconnect();
-    return this.connect();
+    return await this.connect();
   }
 
   /**
@@ -143,56 +143,65 @@ export class AMQPConfirmChannel
    * Create and initialize channel with queues from config
    */
   async connect(options: ConnectOptions = {}): Promise<AMQPDriverConfirmChannel> {
-    let channel = await this.amqpChannel(options);
-    const queueFilter = this.options.queueFilter;
+    const config = this.options;
+    const getChannel = () => this.amqpChannel(options, true);
 
-    async function checkQueue(name: string) {
-      if (!queueFilter.has(name)) {
-        await alongErrors(channel, channel.checkQueue(name));
-        queueFilter.add(name);
-      }
+    async function connect() {
+      const channel = await getChannel();
+      if (config.prefetch) await alongErrors(channel, channel.prefetch(config.prefetch));
+      return channel;
     }
 
-    async function assertQueue(name: string, assertion?: amqp.Options.AssertQueue) {
-      if (!queueFilter.has(name)) {
-        await alongErrors(channel, channel.assertQueue(name, assertion));
-        queueFilter.add(name);
-      }
+    async function checkQueue(
+      channel: AMQPDriverConfirmChannel,
+      name: string,
+    ) {
+      if (config.queueFilter && config.queueFilter.has(name)) return;
+      await alongErrors(channel, channel.checkQueue(name));
+      if (config.queueFilter) config.queueFilter.add(name);
+    }
+
+    async function assertQueue(
+      channel: AMQPDriverConfirmChannel,
+      name: string,
+      assertion?: amqp.Options.AssertQueue,
+    ) {
+      if (config.queueFilter && config.queueFilter.has(name)) return;
+      await alongErrors(channel, channel.assertQueue(name, assertion));
+      if (config.queueFilter) config.queueFilter.add(name);
     }
 
     try {
-      if (this.options.prefetch) {
-        await alongErrors(channel, channel.prefetch(this.options.prefetch));
+      let channel = await connect();
+
+      for (const name of config.check) {
+        await checkQueue(channel, name);
       }
-      for (const name of this.options.check) {
-        await checkQueue(name);
-      }
-      for (const [name, assertion] of Object.entries(this.options.assert)) {
+      for (const [name, assertion] of Object.entries(config.assert)) {
         if (assertion.conflict === 'raise') {
-          await assertQueue(name, assertion);
+          await assertQueue(channel, name, assertion);
           continue;
         }
 
         let queueError: Error | null | undefined;
         for (let attempts = 10; attempts; attempts -= 1) {
           try {
-            await checkQueue(name);
+            await checkQueue(channel, name);
             queueError = null;
             break;
           } catch (err) {
             queueError = err;
-            channel = await this.amqpChannel(options, true);
+            channel = await connect();
           }
           try {
-            await assertQueue(name, assertion);
+            await assertQueue(channel, name, assertion);
             queueError = null;
             break;
           } catch (err) {
             queueError = err;
-            channel = await this.amqpChannel(options, true);
+            channel = await connect();
           }
-
-          await sleep(100);
+          await sleep(1);
         }
         if (queueError) throw queueError;
       }
