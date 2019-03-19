@@ -8,10 +8,12 @@ export namespace AMQPDriverConfirmChannel {
 }
 
 export interface AMQPDriverConfirmChannel
-  extends Pick<events.EventEmitter, 'once' | 'removeListener'>
+  extends Pick<events.EventEmitter, 'once' | 'emit' | 'removeListener'>
 {
   // had to rewrite all these interface methods to get rid of bluebird
   close(): PromiseLike<void>;
+
+  connection: AMQPDriverConnection<AMQPDriverConfirmChannel>;
 
   assertQueue(
     queue: string,
@@ -57,7 +59,7 @@ export interface AMQPDriverConfirmChannel
 
 export interface AMQPDriverConnection<
   T extends AMQPDriverConfirmChannel = AMQPDriverConfirmChannel,
-> {
+> extends Pick<events.EventEmitter, 'once' | 'listeners' | 'removeListener'> {
   close(): PromiseLike<void>;
   createConfirmChannel(): PromiseLike<T>;
 }

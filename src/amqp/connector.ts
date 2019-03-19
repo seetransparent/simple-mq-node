@@ -89,7 +89,10 @@ export class AMQPConnector
 
   constructor(options: AMQPConnectorOptions) {
     const opts: AMQPConnectorFullOptions = {
-      connect: () => resolveConnection(opts.uri).then(c => amqp.connect(c)),
+      connect: async () => {
+        const ip = await resolveConnection(opts.uri);
+        return await amqp.connect(ip);
+      },
       disconnect: con => con.close(),
       name: '',
       exchange: '',
@@ -329,6 +332,7 @@ export class AMQPConnector
   async channel(
     options: AMQPOperationChannelOptions = {},
   ): Promise<AMQPConfirmChannel> {
+    await this.connect();
     return new AMQPConfirmChannel({
       queueFilter: {
         add: name => this.knownQueues.set(name, true),

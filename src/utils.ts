@@ -11,13 +11,36 @@ export type PromiseAccumulatorPromiseLike<T> =
   PromiseLike<PromiseAccumulatorResult<T>>
   | PromiseAccumulatorResult<T>;
 
+export interface PromiseAccumulatorOptions {
+  autocleanup?: boolean;
+}
+
 export class PromiseAccumulator<T = any> implements PromiseLike<PromiseAccumulatorResult<T>[]> {
   public rejections: any[] = [];
+  protected options: PromiseAccumulatorOptions;
 
-  constructor(protected promises: PromiseAccumulatorPromiseLike<T>[] = []) {}
+  constructor(
+    protected promises: PromiseAccumulatorPromiseLike<T>[] = [],
+    options: PromiseAccumulatorOptions = {},
+  ) {
+    this.options = options;
+  }
+
+  remove(...promises: PromiseAccumulatorPromiseLike<T>[]) {
+    for (const promise of promises) {
+      for (let i; (i = this.promises.indexOf(promise)) > -1;) {
+        this.promises.splice(i, 1);
+      }
+    }
+  }
 
   push(...promises: PromiseAccumulatorPromiseLike<T>[]) {
     this.promises.push(...promises);
+    if (this.options.autocleanup) {
+      for (const promise of promises) {
+        Promise.resolve(promise).then(() => this.remove(promise));
+      }
+    }
     return this;
   }
 
@@ -25,6 +48,9 @@ export class PromiseAccumulator<T = any> implements PromiseLike<PromiseAccumulat
     this.push(
       ...promises.map(x => Promise.resolve(x).catch(e => (this.rejections.push(e), undefined))),
     );
+    for (const promise of promises) {
+      Promise.resolve(promise).then(() => this.remove(promise));
+    }
     return this;
   }
 
@@ -63,7 +89,7 @@ export async function awaitWithErrorEvents<T>(
     removeListener(name: string, handler: Function): void,
   },
   promise: T | PromiseLike<T>,
-  errorEvents: string[] = ['error'],
+  errorEvents: string[] = ['error', 'upstreamError'],
 ): Promise<T> {
   return await new Promise<T>((resolve, reject) => {
     let finished = false;

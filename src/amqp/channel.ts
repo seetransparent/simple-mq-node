@@ -2,12 +2,15 @@ import * as amqp from 'amqplib';
 
 import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
 import { AMQPDriverConfirmChannel, Omit } from './types';
-import { Guard, sleep } from '../utils';
+import { sleep } from '../utils';
 import { PullError } from '../errors';
 
 import { alongErrors } from './utils';
 
-const connectionGuard = new Guard(); // used to circumvent amqplib race conditions
+interface OwnedHandler extends Function {
+  (...args: any[]): void;
+  owner: any;
+}
 
 export interface AMQPQueueAssertion extends amqp.Options.AssertQueue {
   conflict?: 'ignore' | 'raise';
@@ -51,9 +54,10 @@ export class AMQPConfirmChannel
   extends ConnectionManager<AMQPDriverConfirmChannel>
   implements Omit<
     AMQPDriverConfirmChannel,
+    'connection' | // private
     'consume' | 'publish' | // overridden
     'checkQueue' | 'assertQueue' | 'prefetch' | // managed by constructor options
-    'once' | 'removeListener' | // not an EventEmitter
+    'once' | 'emit' | 'removeListener' | // not an EventEmitter
     'close' // renamed to disconnect
   >
 {
@@ -88,6 +92,7 @@ export class AMQPConfirmChannel
       // ack operations are never retryable
       return false;
     }
+
     if (e.message.indexOf('CHANNEL_ERROR - second \'channel.open\' seen') > -1) {
       // amqplib is buggy as hell: https://github.com/squaremo/amqp.node/issues/441
       return true;
@@ -114,11 +119,22 @@ export class AMQPConfirmChannel
     return await this.connect();
   }
 
-  /**
-   * Disconnect channel
-   */
-  async disconnect() {
-    return await connectionGuard.exec(() => super.disconnect());
+  protected prepareChannel(channel: AMQPDriverConfirmChannel) {
+    const connection = channel.connection;
+    const handler: OwnedHandler = Object.assign(
+      async (e: Error) => {
+        channel.emit('upstreamError', e);
+        this.disconnect();
+      },
+      { owner: this },
+    );
+    for (const listener of connection.listeners('error') as OwnedHandler[]) {
+      if (listener.owner !== this) continue;
+      connection.removeListener('error', listener);
+    }
+    connection.once('error', handler);
+    this.expiration = Date.now() + this.options.inactivityTime;
+    return channel;
   }
 
   protected async amqpChannel(
@@ -127,16 +143,20 @@ export class AMQPConfirmChannel
   ): Promise<AMQPDriverConfirmChannel> {
     if (reconnect) await this.disconnect(); // force fresh channel
 
-    // force channel retrieval for known errors
-    while (true) {
+    const delay = options.delay || this.options.connectionDelay || 10;
+    const retries = options.retries || this.options.connectionRetries || 10;
+    let lastError = new Error('No connection attempt has been made');
+    for (let retry = -1; retry < retries; retry += 1) {
       try {
-        const channel = await connectionGuard.exec(() => super.connect(options));
-        this.expiration = Date.now() + this.options.inactivityTime;
-        return channel;
+        const channel = await super.connect({ ...options, retries: 0 });
+        return this.prepareChannel(channel);
       } catch (e) {
-        if (!this.retryable(e, 'connect')) throw e;
+        lastError = e;
+        if (!this.retryable(e, 'connect')) break;
       }
+      await sleep(delay);
     }
+    throw lastError;
   }
 
   /**
@@ -144,10 +164,10 @@ export class AMQPConfirmChannel
    */
   async connect(options: ConnectOptions = {}): Promise<AMQPDriverConfirmChannel> {
     const config = this.options;
-    const getChannel = () => this.amqpChannel(options, true);
+    const getChannel = (reconnect: boolean) => this.amqpChannel(options, reconnect);
 
-    async function connect() {
-      const channel = await getChannel();
+    async function connect(reconnect: boolean = true) {
+      const channel = await getChannel(reconnect);
       if (config.prefetch) await alongErrors(channel, channel.prefetch(config.prefetch));
       return channel;
     }
@@ -172,7 +192,7 @@ export class AMQPConfirmChannel
     }
 
     try {
-      let channel = await connect();
+      let channel = await connect(false);
 
       for (const name of config.check) {
         await checkQueue(channel, name);
@@ -226,20 +246,16 @@ export class AMQPConfirmChannel
     return this.options.channelId || null;
   }
 
-  protected discardChannel(channel: AMQPDriverConfirmChannel, e?: Error) {
-    this.ban(); // TODO: better handling
-  }
-
   async operation<T = void>(name: AMQPDriverConfirmChannel.Operation, ...args: any[]): Promise<T> {
     while (true) {
       const channel = await this.autoconnect(name);
       try {
         const result = await alongErrors<T>(channel, channel[name].apply(channel, args));
-        if (name === 'get' && !result) this.discardChannel(channel); // amqplib bug workaround
+        if (name === 'get' && !result) await this.ban(); // amqplib bug workaround
         return result;
       } catch (e) {
         console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
-        this.discardChannel(channel, e); // errors break channel
+        await this.ban(); // errors break channel
         if (!this.retryable(e, name)) throw e;
       }
     }
@@ -266,7 +282,7 @@ export class AMQPConfirmChannel
       try {
         return await alongErrors(channel, promise);
       } catch (e) {
-        this.discardChannel(channel, e); // errors break channel
+        await this.ban();
         if (!this.retryable(e, 'publish')) throw e;
       }
     }
@@ -322,7 +338,7 @@ export class AMQPConfirmChannel
       try {
         return await alongErrors(channel, promise);
       } catch (e) {
-        this.discardChannel(channel, e); // errors break channel
+        await this.ban(); // errors break channel
         if (!this.retryable(e, 'publish')) throw e;
       }
     }
