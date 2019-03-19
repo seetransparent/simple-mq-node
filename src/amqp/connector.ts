@@ -3,13 +3,13 @@ import * as uuid4 from 'uuid/v4';
 import * as LRUCache from 'lru-cache';
 
 import { MessageQueueConnector, ResultMessage } from '../types';
-import { ConnectionManager, ConnectionManagerOptions } from '../base';
+import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
 import { TimeoutError } from '../errors';
 import { omit, objectKey, adler32, withTimeout, sleep } from '../utils';
 
 import { resolveConnection } from './utils';
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
-import { AMQPDriverConnection, Omit } from './types';
+import { AMQPDriverConnection, Omit, AMQPDriverConfirmChannel } from './types';
 
 export interface AMQPConnectorOptions {
   name: string;
@@ -134,12 +134,11 @@ export class AMQPConnector
     this.knownQueues = new LRUCache({ max: opts.queueCacheSize });
   }
 
-  disconnect(): Promise<void> {
-    const promise = super.disconnect();
+  async disconnect(): Promise<void> {
     this.channelsById.reset();
     this.channelsByType = {};
     this.knownQueues.reset();
-    return promise;
+    return await super.disconnect();
   }
 
   protected genId(name: string, type?: string | null) {

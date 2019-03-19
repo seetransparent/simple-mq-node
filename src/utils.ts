@@ -1,6 +1,7 @@
 import * as dns from 'dns';
 import * as net from 'net';
 import * as mem from 'mem';
+import * as dom from 'domain';
 
 import { AnyObject } from './types';
 import { TimeoutError } from './errors';
@@ -114,6 +115,24 @@ export async function awaitWithErrorEvents<T>(
       e => callback(e || new Error('Unexpected rejection')),
     );
   });
+}
+
+export async function withDomain<T>(
+  fnc: () => PromiseLike<T> | T,
+  errorEvents: string[] = ['error', 'upstreamError'],
+): Promise<T> {
+  const domain = new dom.Domain();
+  let error: Error | undefined;
+  for (const event of errorEvents) {
+    domain.once(event, (e: Error) => error = e || new Error(`Event ${event} received.`));
+  }
+  domain.enter();
+  try {
+    return await Promise.resolve(fnc());
+    if (error) throw error;
+  } finally {
+    domain.exit();
+  }
 }
 
 export async function withTimeout<T>(
