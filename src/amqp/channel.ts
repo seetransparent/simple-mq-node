@@ -118,7 +118,7 @@ export class AMQPConfirmChannel
     options: ConnectOptions,
     reconnect = false,
   ): Promise<AMQPDriverConfirmChannel> {
-    if (reconnect) await this.disconnect(); // force fresh channel
+    if (reconnect) await this.disconnect(options); // force fresh channel
 
     const delay = options.delay || this.options.connectionDelay || 10;
     const retries = options.retries || this.options.connectionRetries || 10;
@@ -205,7 +205,7 @@ export class AMQPConfirmChannel
       }
       return channel;
     } catch (e) {
-      await this.disconnect();
+      await this.disconnect(options);
       throw e;
     }
   }

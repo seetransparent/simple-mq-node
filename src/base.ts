@@ -3,6 +3,7 @@ import { Guard, PromiseAccumulator, withTimeout, withDomain, sleep, shhh } from 
 import { TimeoutError } from './errors';
 
 export interface ConnectOptions {
+  guard?: Guard;
   retries?: number;
   delay?: number;
   banPeriod?: number;
@@ -10,6 +11,7 @@ export interface ConnectOptions {
 }
 
 interface FullConnectOptions extends ConnectOptions {
+  guard: Guard;
   retries: number;
   delay: number;
   banPeriod: number;
@@ -25,13 +27,11 @@ export class ConnectionManager<T> {
   static allBannedConnections: Map<Function, Set<any>> = new Map();
   protected connectionPromises: PromiseAccumulator;
   protected connectionOptions: ConnectionManagerOptions<T>;
-  protected connectionGuard: Guard;
   protected connection: T | null;
 
   constructor(
     options: ConnectionManagerOptions<T>,
   ) {
-    this.connectionGuard = new Guard();
     this.connectionOptions = this.withConnectionDefaults(options);
     this.connectionPromises = new PromiseAccumulator([], { autocleanup: true });
   }
@@ -47,6 +47,7 @@ export class ConnectionManager<T> {
   protected withConnectionDefaults<T extends AnyObject>(options: T): FullConnectOptions & T {
     return {
       ...(options as any),
+      guard: options.guard || new Guard(),
       delay: Number.isFinite(options.delay as number) ? options.delay : 100,
       timeout: (options.timeout === 0) ? 0 : options.timeout || 5000,
       retries: Math.max(options.retries || 0, -1),
@@ -73,12 +74,12 @@ export class ConnectionManager<T> {
   }
 
   async connect(options: ConnectOptions = {}): Promise<T> {
-    const { retries, delay, connect, disconnect, timeout } = this.withConnectionDefaults({
+    const { retries, delay, connect, disconnect, timeout, guard } = this.withConnectionDefaults({
       ...this.connectionOptions,
       ...options,
     });
     let timeouted = false;
-    return await this.connectionGuard.exec(
+    return await guard.exec(
       () => withTimeout(
         async () => {
           if (this.connection) return this.connection;
@@ -112,15 +113,23 @@ export class ConnectionManager<T> {
   }
 
   async ban(options: ConnectOptions = {}): Promise<void> {
-    return await this.connectionGuard.exec(async () => {
+    const { guard } = this.withConnectionDefaults({
+      ...this.connectionOptions,
+      ...options,
+    });
+    return await guard.exec(async () => {
       if (!this.connection) return;
       await this.banConnection(this.connection, options);
       this.connection = null;
     });
   }
 
-  async disconnect(): Promise<void> {
-    return await this.connectionGuard.exec(async () => {
+  async disconnect(options: ConnectOptions = {}): Promise<void> {
+    const { guard } = this.withConnectionDefaults({
+      ...this.connectionOptions,
+      ...options,
+    });
+    return await guard.exec(async () => {
       if (!this.connection) return;
       const connection = this.connection;
       await withDomain(() => this.connectionOptions.disconnect(connection));
@@ -128,9 +137,9 @@ export class ConnectionManager<T> {
     });
   }
 
-  async close(): Promise<void> {
+  async close(options: ConnectOptions = {}): Promise<void> {
     await Promise.all([
-      this.disconnect(),
+      this.disconnect(options),
       this.connectionPromises,
     ]);
   }
