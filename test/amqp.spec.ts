@@ -353,7 +353,7 @@ describe('amqp', () => {
         }
       });
 
-      it('high concurrency', async () => {
+      it.skip('high concurrency', async () => {
         const operations = 100;
         const connection = new mock.AMQPMockConnection();
         const client = new lib.AMQPConnector({
