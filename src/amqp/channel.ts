@@ -2,7 +2,7 @@ import * as amqp from 'amqplib';
 
 import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
 import { AMQPDriverConfirmChannel, Omit } from './types';
-import { sleep } from '../utils';
+import { sleep, shhh } from '../utils';
 import { PullError } from '../errors';
 
 import { alongErrors } from './utils';
@@ -52,7 +52,7 @@ export class AMQPConfirmChannel
     'connection' | // private
     'consume' | 'publish' | // overridden
     'checkQueue' | 'assertQueue' | 'prefetch' | // managed by constructor options
-    'on' | 'once' | 'emit' | 'removeListener' | // not an EventEmitter
+    'on' | 'once' | 'emit' | 'listeners' | 'removeListener' | // not an EventEmitter
     'close' // renamed to disconnect
   >
 {
@@ -288,9 +288,9 @@ export class AMQPConfirmChannel
           function handler(message: amqp.ConsumeMessage) {
             if (canceling) {
               if (message) {
-                canceling = canceling
-                  .then(() => channel.reject(message, true))
-                  .catch(() => {});
+                canceling = shhh(
+                  () => canceling.then(() => channel.reject(message, true)),
+                );
               }
             } else if (message) {
               onMessage(message, callback);
@@ -299,9 +299,9 @@ export class AMQPConfirmChannel
             }
           }
           function callback(error?: any, result?: PromiseLike<V> | V) {
-            const promise = canceling = Promise
-              .resolve(channel.cancel(consume.consumerTag))
-              .catch(() => {});
+            const promise = canceling = shhh(
+              () => Promise.resolve(channel.cancel(consume.consumerTag)),
+            );
             promise
               .then(() => canceling) // await other tasks
               .then(() => error ? reject(error) : resolve(result));

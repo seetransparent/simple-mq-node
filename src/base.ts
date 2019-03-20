@@ -1,5 +1,5 @@
 import { AnyObject } from './types';
-import { Guard, PromiseAccumulator, withTimeout, withDomain, sleep } from './utils';
+import { Guard, PromiseAccumulator, withTimeout, withDomain, sleep, shhh } from './utils';
 import { TimeoutError } from './errors';
 
 export interface ConnectOptions {
@@ -65,8 +65,7 @@ export class ConnectionManager<T> {
       this.connectionPromises.push([
         Promise.resolve()
           .then(() => sleep(delay))
-          .then(() => disconnect(connection))
-          .catch(() => {})
+          .then(() => shhh(() => disconnect(connection)))
           .then(() => sleep(banPeriod))
           .then(() => this.bannedConnections.delete(connection)),
       ]);

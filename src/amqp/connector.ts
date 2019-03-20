@@ -6,7 +6,7 @@ import { MessageQueueConnector, ResultMessage } from '../types';
 import { ConnectionManager, ConnectionManagerOptions } from '../base';
 import { TimeoutError } from '../errors';
 import {
-  omit, objectKey, adler32, withTimeout, sleep,
+  omit, objectKey, adler32, withTimeout, sleep, shhh,
   attachNamedListener, removeNamedListener,
 } from '../utils';
 
@@ -95,11 +95,19 @@ export class AMQPConnector
       connect: async () => {
         const ip = await resolveConnection(opts.uri);
         const connection = await amqp.connect(ip);
-        connection.on('error', () => {});   // avoid unhandled errors
         connection.setMaxListeners(Number.MAX_SAFE_INTEGER);
+        attachNamedListener(
+          connection,
+          'error',
+          'main',
+          () => shhh(() => this.disconnect()),
+        );
         return connection;
       },
-      disconnect: con => con.close(),
+      disconnect: async (connection) => {
+        removeNamedListener(connection, 'error', 'main');
+        await connection.close();
+      },
       name: '',
       exchange: '',
       uri: 'amqp://localhost',
@@ -286,7 +294,7 @@ export class AMQPConnector
       throw e;
     } finally {
       for (const message of unwanted) {
-        await channel.reject(message, true).catch(() => {});
+        await shhh(() => channel.reject(message, true));
       }
     }
   }
@@ -339,7 +347,7 @@ export class AMQPConnector
   ): Promise<AMQPConfirmChannel> {
     await this.connect();
     const handlerId = this.genId('errorHandler');
-    return new AMQPConfirmChannel({
+    const confirmChannel = new AMQPConfirmChannel({
       queueFilter: {
         add: name => this.knownQueues.set(name, true),
         has: name => !!this.knownQueues.get(name),
@@ -349,17 +357,28 @@ export class AMQPConnector
         const connection = await this.connect();
         const channel = await connection.createConfirmChannel();
         channel.on('error', () => {});  // avoid unhandled errors
-        attachNamedListener(channel.connection, 'error', handlerId, (e: Error) => {
-          channel.emit('upstreamError', e);
-        });
+        attachNamedListener(
+          channel,
+          'error',
+          handlerId,
+          () => shhh(() => confirmChannel.disconnect()),
+        );
+        attachNamedListener(
+          channel.connection,
+          'error',
+          handlerId,
+          (e: Error) => channel.emit('upstreamError', e),
+
+        );
         return channel;
       },
       disconnect: async (channel) => {
         removeNamedListener(channel.connection, 'error', handlerId);
-        await Promise.resolve(channel.close()).catch(() => { }); // ignore close errors
+        await shhh(() => channel.close());
       },
       ...options,
     });
+    return confirmChannel;
   }
 
   /**

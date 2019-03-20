@@ -148,6 +148,12 @@ export async function awaitWithErrorEvents<T>(
   });
 }
 
+export async function shhh<T>(fnc: () => PromiseLike<T> | T): Promise<T | void> {
+  try {
+    return await Promise.resolve(fnc()).catch(() => {});
+  } catch (e) {}
+}
+
 export async function withDomain<T>(
   fnc: () => PromiseLike<T> | T,
   errorEvents: string[] = ['error', 'upstreamError'],
@@ -181,7 +187,7 @@ export async function withTimeout<T>(
         if (error) reject(error);
         else resolve(result);
       } else if (result && cleanup) {
-        Promise.resolve(result).then(cleanup).catch(() => { }); // TODO: optional logging
+        shhh(() => Promise.resolve(result).then(cleanup));
       }
     }
     const timer = setTimeout(() => cback(new TimeoutError(`Timeout after ${timeout}ms`)), timeout);
