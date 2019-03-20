@@ -367,8 +367,8 @@ export class AMQPConnector
       connect: async () => {
         const connection = await this.connect();
         const channel = await connection.createConfirmChannel() as TaggedChannel;
-        if (channel._simpleMQNodeOwnerChannel) throw new Error('Channel already in use.');
-        channel._simpleMQNodeOwnerChannel = confirmChannel;
+        if (channel.ch.owner) throw new Error('Channel already in use.');
+        channel.ch.owner = confirmChannel;
         attachNamedListener(
           channel,
           'error',
@@ -385,7 +385,7 @@ export class AMQPConnector
         return channel;
       },
       disconnect: async (channel: TaggedChannel) => {
-        if (channel._simpleMQNodeOwnerChannel) delete channel._simpleMQNodeOwnerChannel;
+        if (channel.ch.owner) delete channel.ch.owner;
         removeNamedListener(channel.connection, 'error', handlerId);
         await shhh(() => channel.close());
       },

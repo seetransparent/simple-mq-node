@@ -191,6 +191,7 @@ extends AMQPMockBase
 implements AMQPDriverConfirmChannel {
   public confirm: boolean;
   public connection: AMQPMockConnection;
+  public ch: {};
   protected errored: Error;
   protected closed: boolean;
 
@@ -205,6 +206,7 @@ implements AMQPDriverConfirmChannel {
     this.connection = connection;
     this.confirm = confirm;
     this.closed = false;
+    this.ch = {};
     this.once('error', (e) => {
       this.errored = e;
       if (!this.closed) process.nextTick(() => this.emit('close'));

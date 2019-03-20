@@ -6,7 +6,6 @@ export interface ConnectOptions {
   guard?: Guard;
   retries?: number;
   delay?: number;
-  banPeriod?: number;
   timeout?: number;
 }
 
@@ -14,7 +13,6 @@ interface FullConnectOptions extends ConnectOptions {
   guard: Guard;
   retries: number;
   delay: number;
-  banPeriod: number;
   timeout: number;
 }
 
@@ -24,7 +22,6 @@ export interface ConnectionManagerOptions<T> extends ConnectOptions {
 }
 
 export class ConnectionManager<T> {
-  static allBannedConnections: Map<Function, Set<any>> = new Map();
   protected connectionPromises: PromiseAccumulator;
   protected connectionOptions: ConnectionManagerOptions<T>;
   protected connection: T | null;
@@ -34,14 +31,6 @@ export class ConnectionManager<T> {
   ) {
     this.connectionOptions = this.withConnectionDefaults(options);
     this.connectionPromises = new PromiseAccumulator([], { autocleanup: true });
-  }
-
-  get bannedConnections (): Set<T> {
-    const existing = ConnectionManager.allBannedConnections.get(this.constructor);
-    if (existing) return existing;
-    const empty = new Set<T>();
-    ConnectionManager.allBannedConnections.set(this.constructor, empty);
-    return empty;
   }
 
   protected withConnectionDefaults<T extends AnyObject>(options: T): FullConnectOptions & T {
@@ -55,22 +44,12 @@ export class ConnectionManager<T> {
     };
   }
 
-  protected async banConnection(connection: T, options: ConnectOptions = {}) {
-    const { delay, disconnect, banPeriod } = this.withConnectionDefaults({
-      ...this.connectionOptions,
-      ...options,
-    });
+  protected isBanned(connection: T) {
+    return false; // stub
+  }
 
-    if (!this.bannedConnections.has(connection)) {
-      this.bannedConnections.add(connection);
-      this.connectionPromises.push([
-        Promise.resolve()
-          .then(() => sleep(delay))
-          .then(() => shhh(() => disconnect(connection)))
-          .then(() => sleep(banPeriod))
-          .then(() => this.bannedConnections.delete(connection)),
-      ]);
-    }
+  protected setBanned(connection: T) {
+
   }
 
   async connect(options: ConnectOptions = {}): Promise<T> {
@@ -87,7 +66,7 @@ export class ConnectionManager<T> {
           for (let retry = -1; retry < retries; retry += 1) {
             try {
               const connection = await withDomain(connect);
-              if (this.bannedConnections.has(connection)) {
+              if (this.isBanned(connection)) {
                 continue;
               }
               if (timeouted) {
@@ -119,7 +98,7 @@ export class ConnectionManager<T> {
     });
     return await guard.exec(async () => {
       if (!this.connection) return;
-      await this.banConnection(this.connection, options);
+      this.setBanned(this.connection);
       this.connection = null;
     });
   }

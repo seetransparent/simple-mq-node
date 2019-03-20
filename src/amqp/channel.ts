@@ -49,7 +49,7 @@ export class AMQPConfirmChannel
   extends ConnectionManager<AMQPDriverConfirmChannel>
   implements Omit<
     AMQPDriverConfirmChannel,
-    'connection' | // private
+    'connection' | 'ch' | // private
     'consume' | 'publish' | // overridden
     'checkQueue' | 'assertQueue' | 'prefetch' | // managed by constructor options
     'on' | 'once' | 'emit' | 'listeners' | 'removeListener' | // not an EventEmitter
@@ -82,6 +82,20 @@ export class AMQPConfirmChannel
     this.expiration = 0;
   }
 
+  protected isBanned(channel: AMQPDriverConfirmChannel): boolean {
+    return !!channel.ch.banned;
+  }
+
+  protected setBanned(channel: AMQPDriverConfirmChannel) {
+    channel.ch.banned = true;
+    setTimeout(
+      () => {
+        if (channel.ch.banned) delete channel.ch.banned;
+      },
+      5000,
+    );
+  }
+
   retryable(e: Error, operation?: string, queue?: string): boolean {
     if (operation === 'ack') {
       // ack operations are never retryable
@@ -96,6 +110,7 @@ export class AMQPConfirmChannel
     if (e.message.indexOf('NOT_FOUND - no queue')) {
       const match = /- no queue '([^']+|\\.)+'/.exec(e.message);
       const equeue = match ? match[1] : null;
+      console.log('>>>>>>>', equeue, queue);
       if (equeue) {
         if (this.options.queueFilter.has(equeue)) { // invalid cache
           this.options.queueFilter.delete(equeue);

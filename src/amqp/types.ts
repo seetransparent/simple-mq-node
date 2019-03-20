@@ -14,6 +14,10 @@ export interface AMQPDriverConfirmChannel
   close(): PromiseLike<void>;
 
   connection: AMQPDriverConnection<AMQPDriverConfirmChannel>;
+  ch: {
+    banned?: boolean; // ours
+    owner?: any; // ours
+  };
 
   assertQueue(
     queue: string,
