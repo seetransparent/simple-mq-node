@@ -128,7 +128,11 @@ implements AMQPDriverConnection {
     const name = [exchange, routingKey].filter(x => x).join(':');
     const existing = this.queues[name];
     if (existing) return existing;
-    throw new Error(`queue ${routingKey} does not exist`);
+
+    throw new Error(
+      'Channel closed by server: 404 (NOT-FOUND) with message '
+      + `"NOT_FOUND - no queue '${routingKey}' in vhost '/'"`,
+    );
   }
 
   getOrCreateQueue(
@@ -297,7 +301,10 @@ implements AMQPDriverConfirmChannel {
       this.addMessage(exchange, routingKey, content, options, callback);
       return true;
     }
-    setTimeout(() => this.addMessage(exchange, routingKey, content, options, callback), 500);
+    setTimeout(
+      () => this.addMessage(exchange, routingKey, content, options, callback),
+      this.connection.slow ? 500 : 0,
+    );
     return false;
   }
 

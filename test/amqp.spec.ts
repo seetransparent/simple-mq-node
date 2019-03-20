@@ -117,7 +117,7 @@ describe('amqp', () => {
         });
         await expect(connector.push('q', 'msg', Buffer.from('test')))
           .rejects.toBe(error);
-        expect(() => connection.getQueue('', 'q')).toThrow('queue q does not exist');
+        expect(() => connection.getQueue('', 'q')).toThrow(/NOT_FOUND - no queue 'q' in vhost/);
         expect(attempt).toBe(4);
       });
 
@@ -351,6 +351,50 @@ describe('amqp', () => {
         } finally {
           await connector.disconnect();
         }
+      });
+
+      it('high concurrency', async () => {
+        const operations = 100;
+        const connection = new mock.AMQPMockConnection();
+        const client = new lib.AMQPConnector({
+          name: 'client',
+          connect: () => connection,
+        });
+        const server = new lib.AMQPConnector({
+          name: 'server',
+          connect: () => connection,
+        });
+        await Promise.all([
+          async () => {
+            let index = 0;
+            await server.consume('queries', null, (message) => {
+              index += 1;
+              console.log(`Consumed server 1 ${index}`);
+              return {
+                content: Buffer.from(`server 1 ${index}`),
+                break: index > 499,
+              };
+            });
+          },
+          async () => {
+            let index = 0;
+            await server.consume('queries', null, (message) => {
+              index += 1;
+              console.log(`Consumed server 2 ${index}`);
+              return {
+                content: Buffer.from(`server 2 ${index}`),
+                break: index > 499,
+              };
+            });
+          },
+          async () => {
+            const buffers = ['a', 'b', 'c', 'd'].map(c => Buffer.from(c));
+            for (let i = 0; i < operations; i += buffers.length) {
+              await Promise.all(buffers.map(b => client.rpc('queries', 'query', b)));
+            }
+            console.log('client done');
+          },
+        ].map(x => x()));
       });
     });
 

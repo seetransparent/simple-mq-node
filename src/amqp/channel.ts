@@ -240,6 +240,7 @@ export class AMQPConfirmChannel
       } catch (e) {
         console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
         await this.ban(); // errors break channel
+        console.log(`Retryable ${this.retryable(e, name)}`);
         if (!this.retryable(e, name)) throw e;
       }
     }
