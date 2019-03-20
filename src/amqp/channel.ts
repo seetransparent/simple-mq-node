@@ -96,9 +96,17 @@ export class AMQPConfirmChannel
     if (e.message.indexOf('NOT_FOUND - no queue')) {
       const match = /- no queue '([^']+|\\.)+'/.exec(e.message);
       const queue = match ? match[1] : null;
-      if (queue && this.options.queueFilter.has(queue)) {
-        this.options.queueFilter.delete(queue);
-        return true;
+      if (queue) {
+        if (this.options.queueFilter.has(queue)) {
+          this.options.queueFilter.delete(queue);
+          return true;
+        }
+        if (this.options.check.indexOf(queue) > -1) {
+          return true;
+        }
+        if (this.options.assert[queue]) {
+          return true;
+        }
       }
     }
     return false;
