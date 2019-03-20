@@ -361,6 +361,7 @@ export class AMQPConnector
         const connection = await this.connect();
         const channel = await connection.createConfirmChannel() as TaggedChannel;
         if (channel._simpleMQNodeOwnerChannel) throw new Error('Channel already in use.');
+        channel._simpleMQNodeOwnerChannel = confirmChannel;
         channel.on('error', () => {});  // avoid unhandled errors
         attachNamedListener(
           channel,
