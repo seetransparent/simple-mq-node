@@ -95,8 +95,7 @@ export class AMQPConnector
   protected channelsById: LRUCache.Cache<string, AMQPConfirmChannel>;
   protected channelsByType: { [type: string]: AMQPConfirmChannel[]};
   protected knownQueues: LRUCache.Cache<string, boolean>;
-  protected knownChannels: LRUCache.Cache<string, boolean>;
-  protected bannedChannels: Set<Number>;
+  protected bannedChannels: Set<string>;
 
   constructor(options: AMQPConnectorOptions) {
     const opts: AMQPConnectorFullOptions = {
@@ -152,10 +151,10 @@ export class AMQPConnector
         }
       },
     });
+    this.bannedChannels = new Set();
     this.channelsByType = {};
     this.channelsByCh = {};
     this.knownQueues = new LRUCache({ max: opts.queueCacheSize });
-    this.knownChannels = new LRUCache({ max: opts.queueCacheSize });
   }
 
   async disconnect(): Promise<void> {
@@ -370,9 +369,9 @@ export class AMQPConnector
         delete: name => this.knownQueues.del(name),
       },
       channelFilter: {
-        add: name => this.knownChannels.set(name, true),
-        has: name => !!this.knownChannels.get(name),
-        delete: name => this.knownChannels.del(name),
+        add: name => this.bannedChannels.add(name),
+        has: name => !!this.bannedChannels.has(name),
+        delete: name => this.bannedChannels.delete(name),
       },
       connect: async () => {
         const connection = await this.connect();
