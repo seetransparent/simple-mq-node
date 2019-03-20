@@ -20,6 +20,7 @@ describe('amqp', () => {
             add: () => {},
             delete: key => removal.push(key),
           },
+          check: ['myqueue'],
         });
         const error = new Error(
           'Channel closed by server: 404(NOT - FOUND) with message '

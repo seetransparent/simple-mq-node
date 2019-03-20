@@ -99,12 +99,8 @@ export class AMQPConfirmChannel
       if (queue) {
         if (this.options.queueFilter.has(queue)) {
           this.options.queueFilter.delete(queue);
-          return true;
         }
-        if (this.options.check.indexOf(queue) > -1) {
-          return true;
-        }
-        if (this.options.assert[queue]) {
+        if (this.options.check.indexOf(queue) > -1 || this.options.assert[queue]) {
           return true;
         }
       }
@@ -213,8 +209,10 @@ export class AMQPConfirmChannel
       }
       return channel;
     } catch (e) {
+      console.log(`Operation connect resulted on error ${e}, disconnecting...`);
       await this.disconnect(options);
-      throw e;
+      if (!this.retryable(e, 'connect')) throw e;
+      return await this.connect(options);
     }
   }
 
@@ -268,6 +266,7 @@ export class AMQPConfirmChannel
       try {
         return await alongErrors(channel, promise);
       } catch (e) {
+        console.log(`Operation publish resulted on error ${e}, disconnecting...`);
         await this.ban();
         if (!this.retryable(e, 'publish')) throw e;
       }
@@ -287,45 +286,56 @@ export class AMQPConfirmChannel
     onMessage: (msg: amqp.Message, callback: (err: any, v?: PromiseLike<V> | V) => void) => any,
     options?: amqp.Options.Consume,
   ): Promise<V> {
-    while (true) {
-      const channel = await this.autoconnect('publish');
-      const promise = new Promise<V>((resolve, reject) => {
-        try {
-          let consume: amqp.Replies.Consume;
-          let canceling: Promise<any>;
-          function handler(message: amqp.ConsumeMessage) {
-            if (canceling) {
-              if (message) {
-                canceling = shhh(
-                  () => canceling.then(() => channel.reject(message, true)),
-                );
-              }
-            } else if (message) {
-              onMessage(message, callback);
-            } else {
-              callback(new PullError('Consume closed by remote server'));
-            }
-          }
-          function callback(error?: any, result?: PromiseLike<V> | V) {
-            const promise = canceling = shhh(
-              () => Promise.resolve(channel.cancel(consume.consumerTag)),
-            );
-            promise
-              .then(() => canceling) // await other tasks
-              .then(() => error ? reject(error) : resolve(result));
-          }
-          channel
-            .consume(queue, handler, options)
-            .then(reply => consume = reply, reject);
-        } catch (e) {
-          reject(e);
-        }
-      });
+    function consume(
+      channel: AMQPDriverConfirmChannel,
+      resolve: (value: V | PromiseLike<V> | undefined) => void,
+      reject: (e: Error) => void,
+    ) {
       try {
+        let consumeReply: PromiseLike<amqp.Replies.Consume | void>;
+        let canceling: Promise<any>;
+        function handler(message: amqp.ConsumeMessage) {
+          if (canceling) {
+            if (message) {
+              canceling = shhh(
+                () => canceling.then(() => channel.reject(message, true)),
+              );
+            }
+          } else if (message) {
+            onMessage(message, callback);
+          } else {
+            callback(new PullError('Consume closed by remote server'));
+          }
+        }
+        async function callback(error?: any, result?: PromiseLike<V> | V) {
+          try {
+            const r = await consumeReply;
+            await (
+              canceling = shhh(() => Promise.resolve<any>(r ? channel.cancel(r.consumerTag) : null))
+            );
+            await canceling; // await other attached tasks
+            if (error) reject(error);
+            else resolve(await result);
+          } catch (e) {
+            reject(e);
+          }
+        }
+        consumeReply = Promise.resolve()
+          .then(() => channel.consume(queue, handler, options))
+          .catch(reject);
+      } catch (e) {
+        reject(e);
+      }
+    }
+    while (true) {
+      const channel = await this.autoconnect('consume');
+      try {
+        const promise = new Promise<V>((resolve, reject) => consume(channel, resolve, reject));
         return await alongErrors(channel, promise);
       } catch (e) {
+        console.log(`Operation consume resulted on error ${e}, disconnecting...`);
         await this.ban(); // errors break channel
-        if (!this.retryable(e, 'publish')) throw e;
+        if (!this.retryable(e, 'consume')) throw e;
       }
     }
   }

@@ -6,7 +6,7 @@ import { MessageQueueConnector, ResultMessage } from '../types';
 import { ConnectionManager, ConnectionManagerOptions } from '../base';
 import { TimeoutError } from '../errors';
 import {
-  omit, objectKey, adler32, withTimeout, sleep, shhh, Guard,
+  omit, objectKey, adler32, withTimeout, sleep, shhh,
   attachNamedListener, removeNamedListener,
 } from '../utils';
 
@@ -28,7 +28,6 @@ export interface AMQPConnectorOptions {
   connectionRetries?: number;
   connectionDelay?: number;
   channelCacheSize?: number;
-  channelGuard?: Guard;
   queueCacheSize?: number;
 }
 
@@ -41,7 +40,6 @@ interface AMQPConnectorFullOptions
   uri: string;
   timeout: number;
   channelCacheSize: number;
-  channelGuard: Guard;
   queueCacheSize: number;
 }
 
@@ -124,7 +122,6 @@ export class AMQPConnector
       channelCacheSize: 100,
       queueCacheSize: 10000,
       ...options,
-      channelGuard: options.channelGuard || new Guard(),
     };
     super({
       connect: opts.connect,
@@ -372,7 +369,6 @@ export class AMQPConnector
         const channel = await connection.createConfirmChannel() as TaggedChannel;
         if (channel._simpleMQNodeOwnerChannel) throw new Error('Channel already in use.');
         channel._simpleMQNodeOwnerChannel = confirmChannel;
-        channel.on('error', () => {});  // avoid unhandled errors
         attachNamedListener(
           channel,
           'error',
@@ -394,7 +390,6 @@ export class AMQPConnector
         await shhh(() => channel.close());
       },
       ...options,
-      guard: options.guard || this.options.channelGuard,
     });
     return confirmChannel;
   }
