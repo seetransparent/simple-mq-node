@@ -226,7 +226,7 @@ declare module 'amqplib' {
 
   export interface Channel extends events.EventEmitter {
     connection: Connection;
-    ch: {};
+    ch: Number;
 
     close(): PromiseLike<void>;
 

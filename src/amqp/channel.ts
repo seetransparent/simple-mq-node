@@ -11,7 +11,7 @@ export interface AMQPQueueAssertion extends amqp.Options.AssertQueue {
   conflict?: 'ignore' | 'raise';
 }
 
-export interface AMQPQueueFilter {
+export interface Filter {
   has: (name: string) => boolean;
   add: (name: string) => void;
   delete: (name: string) => void;
@@ -31,7 +31,8 @@ export interface AMQPConfirmChannelOptions
   connectionTimeout?: number;
   connectionRetries?: number;
   connectionDelay?: number;
-  queueFilter?: AMQPQueueFilter;
+  queueFilter?: Filter;
+  channelFilter?: Filter;
 }
 
 export interface AMQPConfirmChannelFullOptions
@@ -42,7 +43,8 @@ export interface AMQPConfirmChannelFullOptions
     [queue: string]: AMQPQueueAssertion;
   };
   inactivityTime: number;
-  queueFilter: AMQPQueueFilter;
+  queueFilter: Filter;
+  channelFilter: Filter;
 }
 
 export class AMQPConfirmChannel
@@ -77,21 +79,24 @@ export class AMQPConfirmChannel
         add: () => {},
         delete: () => {},
       },
+      channelFilter: {
+        has: () => false,
+        add: () => { },
+        delete: () => { },
+      },
       ...options,
     };
     this.expiration = 0;
   }
 
   protected isBanned(channel: AMQPDriverConfirmChannel): boolean {
-    return !!channel.ch.banned;
+    return this.options.channelFilter.has(`${channel.ch}`);
   }
 
   protected setBanned(channel: AMQPDriverConfirmChannel) {
-    channel.ch.banned = true;
+    this.options.channelFilter.add(`${channel.ch}`);
     setTimeout(
-      () => {
-        if (channel.ch.banned) delete channel.ch.banned;
-      },
+      () => this.options.channelFilter.delete(`${channel.ch}`),
       5000,
     );
   }

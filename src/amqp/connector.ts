@@ -91,9 +91,12 @@ export class AMQPConnector
   protected appId: string;
   protected idCounter: number;
 
+  protected channelsByCh: { [id: string]: AMQPConfirmChannel };
   protected channelsById: LRUCache.Cache<string, AMQPConfirmChannel>;
   protected channelsByType: { [type: string]: AMQPConfirmChannel[]};
   protected knownQueues: LRUCache.Cache<string, boolean>;
+  protected knownChannels: LRUCache.Cache<string, boolean>;
+  protected bannedChannels: Set<Number>;
 
   constructor(options: AMQPConnectorOptions) {
     const opts: AMQPConnectorFullOptions = {
@@ -150,7 +153,9 @@ export class AMQPConnector
       },
     });
     this.channelsByType = {};
+    this.channelsByCh = {};
     this.knownQueues = new LRUCache({ max: opts.queueCacheSize });
+    this.knownChannels = new LRUCache({ max: opts.queueCacheSize });
   }
 
   async disconnect(): Promise<void> {
@@ -364,11 +369,19 @@ export class AMQPConnector
         has: name => !!this.knownQueues.get(name),
         delete: name => this.knownQueues.del(name),
       },
+      channelFilter: {
+        add: name => this.knownChannels.set(name, true),
+        has: name => !!this.knownChannels.get(name),
+        delete: name => this.knownChannels.del(name),
+      },
       connect: async () => {
         const connection = await this.connect();
         const channel = await connection.createConfirmChannel() as TaggedChannel;
-        if (channel.ch.owner) throw new Error('Channel already in use.');
-        channel.ch.owner = confirmChannel;
+        if (this.channelsByCh[`${channel.ch}`]) {
+          if (this.channelsByCh[`${channel.ch}`] === confirmChannel) return channel;
+          throw new Error('Channel already in use.');
+        }
+        this.channelsByCh[`${channel.ch}`] = confirmChannel;
         attachNamedListener(
           channel,
           'error',
@@ -385,7 +398,7 @@ export class AMQPConnector
         return channel;
       },
       disconnect: async (channel: TaggedChannel) => {
-        if (channel.ch.owner) delete channel.ch.owner;
+        if (this.channelsByCh[`${channel.ch}`]) delete this.channelsByCh[`${channel.ch}`];
         removeNamedListener(channel.connection, 'error', handlerId);
         await shhh(() => channel.close());
       },
