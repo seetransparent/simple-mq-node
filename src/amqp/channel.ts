@@ -93,11 +93,22 @@ export class AMQPConfirmChannel
       return true;
     }
 
-    console.log('>>>', e.message);
+    console.log('>>>>', JSON.stringify({
+      message: e.message,
+      indexOf: e.message.indexOf('NOT_FOUND - no queue'),
+    }));
     if (e.message.indexOf('NOT_FOUND - no queue')) {
       const match = /- no queue '([^']+|\\.)+'/.exec(e.message);
       const queue = match ? match[1] : null;
+      console.log('>>>>', JSON.stringify({ match, queue }));
       if (queue) {
+        console.log('>>>>', JSON.stringify({
+          options: this.options,
+          has: this.options.queueFilter.has(queue),
+          check: this.options.check,
+          checkIndexOf: this.options.check.indexOf(queue),
+          assert: this.options.assert[queue]
+        }));
         if (this.options.queueFilter.has(queue)) {
           this.options.queueFilter.delete(queue);
         }
