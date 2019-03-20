@@ -368,11 +368,7 @@ export class AMQPConnector
         has: name => !!this.knownQueues.get(name),
         delete: name => this.knownQueues.del(name),
       },
-      channelFilter: {
-        add: name => this.bannedChannels.add(name),
-        has: name => !!this.bannedChannels.has(name),
-        delete: name => this.bannedChannels.delete(name),
-      },
+      channelFilter: this.bannedChannels,
       connect: async () => {
         const connection = await this.connect();
         const channel = await connection.createConfirmChannel() as TaggedChannel;
