@@ -7,11 +7,6 @@ import { PullError } from '../errors';
 
 import { alongErrors } from './utils';
 
-interface OwnedHandler extends Function {
-  (...args: any[]): void;
-  owner: any;
-}
-
 export interface AMQPQueueAssertion extends amqp.Options.AssertQueue {
   conflict?: 'ignore' | 'raise';
 }
@@ -57,7 +52,7 @@ export class AMQPConfirmChannel
     'connection' | // private
     'consume' | 'publish' | // overridden
     'checkQueue' | 'assertQueue' | 'prefetch' | // managed by constructor options
-    'once' | 'emit' | 'removeListener' | // not an EventEmitter
+    'on' | 'once' | 'emit' | 'removeListener' | // not an EventEmitter
     'close' // renamed to disconnect
   >
 {
@@ -119,24 +114,6 @@ export class AMQPConfirmChannel
     return await this.connect();
   }
 
-  protected prepareChannel(channel: AMQPDriverConfirmChannel) {
-    const connection = channel.connection;
-    const handler: OwnedHandler = Object.assign(
-      async (e: Error) => {
-        channel.emit('upstreamError', e);
-        this.disconnect();
-      },
-      { owner: this },
-    );
-    for (const listener of connection.listeners('error') as OwnedHandler[]) {
-      if (listener.owner !== this) continue;
-      connection.removeListener('error', listener);
-    }
-    connection.once('error', handler);
-    this.expiration = Date.now() + this.options.inactivityTime;
-    return channel;
-  }
-
   protected async amqpChannel(
     options: ConnectOptions,
     reconnect = false,
@@ -149,7 +126,8 @@ export class AMQPConfirmChannel
     for (let retry = -1; retry < retries; retry += 1) {
       try {
         const channel = await super.connect({ ...options, retries: 0 });
-        return this.prepareChannel(channel);
+        this.expiration = Date.now() + this.options.inactivityTime;
+        return channel;
       } catch (e) {
         lastError = e;
         if (!this.retryable(e, 'connect')) break;

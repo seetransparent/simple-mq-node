@@ -3,13 +3,16 @@ import * as uuid4 from 'uuid/v4';
 import * as LRUCache from 'lru-cache';
 
 import { MessageQueueConnector, ResultMessage } from '../types';
-import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
+import { ConnectionManager, ConnectionManagerOptions } from '../base';
 import { TimeoutError } from '../errors';
-import { omit, objectKey, adler32, withTimeout, sleep } from '../utils';
+import {
+  omit, objectKey, adler32, withTimeout, sleep,
+  attachNamedListener, removeNamedListener,
+} from '../utils';
 
 import { resolveConnection } from './utils';
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
-import { AMQPDriverConnection, Omit, AMQPDriverConfirmChannel } from './types';
+import { AMQPDriverConnection, Omit } from './types';
 
 export interface AMQPConnectorOptions {
   name: string;
@@ -91,7 +94,10 @@ export class AMQPConnector
     const opts: AMQPConnectorFullOptions = {
       connect: async () => {
         const ip = await resolveConnection(opts.uri);
-        return await amqp.connect(ip);
+        const connection = await amqp.connect(ip);
+        connection.on('error', () => {});   // avoid unhandled errors
+        connection.setMaxListeners(Number.MAX_SAFE_INTEGER);
+        return connection;
       },
       disconnect: con => con.close(),
       name: '',
@@ -332,14 +338,26 @@ export class AMQPConnector
     options: AMQPOperationChannelOptions = {},
   ): Promise<AMQPConfirmChannel> {
     await this.connect();
+    const handlerId = this.genId('errorHandler');
     return new AMQPConfirmChannel({
       queueFilter: {
         add: name => this.knownQueues.set(name, true),
         has: name => !!this.knownQueues.get(name),
         delete: name => this.knownQueues.del(name),
       },
-      connect: () => this.connect().then(c => c.createConfirmChannel()),
-      disconnect: c => Promise.resolve(c.close()).catch(() => { }), // ignore close errors
+      connect: async () => {
+        const connection = await this.connect();
+        const channel = await connection.createConfirmChannel();
+        channel.on('error', () => {});  // avoid unhandled errors
+        attachNamedListener(channel.connection, 'error', handlerId, (e: Error) => {
+          channel.emit('upstreamError', e);
+        });
+        return channel;
+      },
+      disconnect: async (channel) => {
+        removeNamedListener(channel.connection, 'error', handlerId);
+        await Promise.resolve(channel.close()).catch(() => { }); // ignore close errors
+      },
       ...options,
     });
   }

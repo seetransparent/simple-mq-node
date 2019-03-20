@@ -2,6 +2,7 @@ import * as dns from 'dns';
 import * as net from 'net';
 import * as mem from 'mem';
 import * as dom from 'domain';
+import * as events from 'events';
 
 import { AnyObject } from './types';
 import { TimeoutError } from './errors';
@@ -84,11 +85,41 @@ export function omit<T extends { [prop: string]: any } = {}, V = T>(
   return resulting;
 }
 
+interface AttachedNamedListenerHandler extends Function {
+  (...args: any[]): void;
+  _attachedNamedListenerName?: string;
+}
+
+export async function attachNamedListener<T extends Function>(
+  emitter: Pick<events.EventEmitter, 'on' | 'listeners' | 'removeListener'>,
+  event: string,
+  name: string,
+  handler: T,
+) {
+  removeNamedListener(emitter, event, name);
+  emitter.on(
+    event,
+    Object.assign(
+      (...args: any[]) => handler(...args),
+      { _attachedNamedListenerName: name },
+    ),
+  );
+}
+
+export async function removeNamedListener<T extends Function>(
+  emitter: Pick<events.EventEmitter, 'listeners' | 'removeListener'>,
+  event: string,
+  name: string,
+) {
+  for (const listener of emitter.listeners(event) as AttachedNamedListenerHandler[]) {
+    if (listener._attachedNamedListenerName === name) {
+      emitter.removeListener('name', listener);
+    }
+  }
+}
+
 export async function awaitWithErrorEvents<T>(
-  emitter: {
-    once(name: string, handler: Function): void,
-    removeListener(name: string, handler: Function): void,
-  },
+  emitter: Pick<events.EventEmitter, 'once' | 'removeListener'>,
   promise: T | PromiseLike<T>,
   errorEvents: string[] = ['error', 'upstreamError'],
 ): Promise<T> {
