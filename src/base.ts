@@ -98,6 +98,7 @@ export class ConnectionManager<T> {
     });
     return await guard.exec(async () => {
       if (!this.connection) return;
+      await shhh(() => this.disconnect());
       this.setBanned(this.connection);
       this.connection = null;
     });
