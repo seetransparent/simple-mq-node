@@ -102,7 +102,7 @@ export async function attachNamedListener<T extends Function>(
     Object.assign(
       (...args: any[]) => handler(...args),
       { _attachedNamedListenerName: name },
-    ),
+    ) as AttachedNamedListenerHandler,
   );
 }
 
