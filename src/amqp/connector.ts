@@ -14,10 +14,6 @@ import { resolveConnection } from './utils';
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
 import { AMQPDriverConnection, Omit, AMQPDriverConfirmChannel } from './types';
 
-interface TaggedChannel extends AMQPDriverConfirmChannel {
-  _simpleMQNodeOwnerChannel?: AMQPConfirmChannel;
-}
-
 export interface AMQPConnectorOptions {
   name: string;
   uri?: string;
@@ -371,7 +367,7 @@ export class AMQPConnector
       channelFilter: this.bannedChannels,
       connect: async () => {
         const connection = await this.connect();
-        const channel = await connection.createConfirmChannel() as TaggedChannel;
+        const channel = await connection.createConfirmChannel();
         if (this.channelsByCh[`${channel.ch}`]) {
           if (this.channelsByCh[`${channel.ch}`] === confirmChannel) return channel;
           throw new Error('Channel already in use.');
@@ -392,7 +388,7 @@ export class AMQPConnector
         );
         return channel;
       },
-      disconnect: async (channel: TaggedChannel) => {
+      disconnect: async (channel: AMQPDriverConfirmChannel) => {
         if (this.channelsByCh[`${channel.ch}`]) delete this.channelsByCh[`${channel.ch}`];
         removeNamedListener(channel.connection, 'error', handlerId);
         await shhh(() => channel.close());
