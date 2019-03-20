@@ -87,7 +87,7 @@ export function omit<T extends { [prop: string]: any } = {}, V = T>(
 
 interface AttachedNamedListenerHandler extends Function {
   (...args: any[]): void;
-  _attachedNamedListenerName?: string;
+  _simpleMQNodeAttachedNamedListenerName?: string;
 }
 
 export async function attachNamedListener<T extends Function>(
@@ -101,7 +101,7 @@ export async function attachNamedListener<T extends Function>(
     event,
     Object.assign(
       (...args: any[]) => handler(...args),
-      { _attachedNamedListenerName: name },
+      { _simpleMQNodeAttachedNamedListenerName: name },
     ) as AttachedNamedListenerHandler,
   );
 }
@@ -112,7 +112,7 @@ export async function removeNamedListener<T extends Function>(
   name: string,
 ) {
   for (const listener of emitter.listeners(event) as AttachedNamedListenerHandler[]) {
-    if (listener._attachedNamedListenerName === name) {
+    if (listener._simpleMQNodeAttachedNamedListenerName === name) {
       emitter.removeListener('name', listener);
     }
   }

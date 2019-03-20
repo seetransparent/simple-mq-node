@@ -12,7 +12,11 @@ import {
 
 import { resolveConnection } from './utils';
 import { AMQPConfirmChannel, AMQPConfirmChannelOptions } from './channel';
-import { AMQPDriverConnection, Omit } from './types';
+import { AMQPDriverConnection, Omit, AMQPDriverConfirmChannel } from './types';
+
+interface TaggedChannel extends AMQPDriverConfirmChannel {
+  _simpleMQNodeOwnerChannel?: AMQPConfirmChannel;
+}
 
 export interface AMQPConnectorOptions {
   name: string;
@@ -355,7 +359,8 @@ export class AMQPConnector
       },
       connect: async () => {
         const connection = await this.connect();
-        const channel = await connection.createConfirmChannel();
+        const channel = await connection.createConfirmChannel() as TaggedChannel;
+        if (channel._simpleMQNodeOwnerChannel) throw new Error('Channel already in use.');
         channel.on('error', () => {});  // avoid unhandled errors
         attachNamedListener(
           channel,
@@ -372,7 +377,8 @@ export class AMQPConnector
         );
         return channel;
       },
-      disconnect: async (channel) => {
+      disconnect: async (channel: TaggedChannel) => {
+        if (channel._simpleMQNodeOwnerChannel) delete channel._simpleMQNodeOwnerChannel;
         removeNamedListener(channel.connection, 'error', handlerId);
         await shhh(() => channel.close());
       },
