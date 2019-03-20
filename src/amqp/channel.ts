@@ -82,7 +82,7 @@ export class AMQPConfirmChannel
     this.expiration = 0;
   }
 
-  retryable(e: Error, operation?: string): boolean {
+  retryable(e: Error, operation?: string, queue?: string): boolean {
     if (operation === 'ack') {
       // ack operations are never retryable
       return false;
@@ -93,26 +93,18 @@ export class AMQPConfirmChannel
       return true;
     }
 
-    console.log('>>>>', JSON.stringify({
-      message: e.message,
-      indexOf: e.message.indexOf('NOT_FOUND - no queue'),
-    }));
     if (e.message.indexOf('NOT_FOUND - no queue')) {
       const match = /- no queue '([^']+|\\.)+'/.exec(e.message);
-      const queue = match ? match[1] : null;
-      console.log('>>>>', JSON.stringify({ match, queue }));
-      if (queue) {
-        console.log('>>>>', JSON.stringify({
-          options: this.options,
-          has: this.options.queueFilter.has(queue),
-          check: this.options.check,
-          checkIndexOf: this.options.check.indexOf(queue),
-          assert: this.options.assert[queue]
-        }));
-        if (this.options.queueFilter.has(queue)) {
-          this.options.queueFilter.delete(queue);
+      const equeue = match ? match[1] : null;
+      if (equeue) {
+        if (this.options.queueFilter.has(equeue)) { // invalid cache
+          this.options.queueFilter.delete(equeue);
         }
-        if (this.options.check.indexOf(queue) > -1 || this.options.assert[queue]) {
+        if (
+          (queue && equeue !== queue) // got bugged channel
+          || this.options.check.indexOf(equeue) > -1 // queue removed by other
+          || this.options.assert[equeue] // queue removed by other
+        ) {
           return true;
         }
       }
@@ -243,16 +235,18 @@ export class AMQPConfirmChannel
   }
 
   async operation<T = void>(name: AMQPDriverConfirmChannel.Operation, ...args: any[]): Promise<T> {
+    const resultBan = ['get'].indexOf(name) > -1;
+    const queueAware = ['deleteQueue', 'get'].indexOf(name) > -1;
     while (true) {
       const channel = await this.autoconnect(name);
       try {
         const result = await alongErrors<T>(channel, channel[name].apply(channel, args));
-        if (name === 'get' && !result) await this.ban(); // amqplib bug workaround
+        if (resultBan && !result) await this.ban(); // amqplib bug workaround
         return result;
       } catch (e) {
         console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
         await this.ban(); // errors break channel
-        if (!this.retryable(e, name)) throw e;
+        if (!this.retryable(e, name, queueAware ? args[0] : undefined)) throw e;
       }
     }
   }
@@ -280,7 +274,7 @@ export class AMQPConfirmChannel
       } catch (e) {
         console.log(`Operation publish resulted on error ${e}, disconnecting...`);
         await this.ban();
-        if (!this.retryable(e, 'publish')) throw e;
+        if (!this.retryable(e, 'publish', routingKey)) throw e;
       }
     }
   }
@@ -347,7 +341,7 @@ export class AMQPConfirmChannel
       } catch (e) {
         console.log(`Operation consume resulted on error ${e}, disconnecting...`);
         await this.ban(); // errors break channel
-        if (!this.retryable(e, 'consume')) throw e;
+        if (!this.retryable(e, 'consume', queue)) throw e;
       }
     }
   }
