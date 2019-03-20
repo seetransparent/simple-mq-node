@@ -114,7 +114,7 @@ export class AMQPConfirmChannel
    */
   protected async autoconnect(operation: string): Promise<AMQPDriverConfirmChannel> {
     const now = Date.now();
-    if (this.expiration < now && operation !== 'ack') await this.disconnect();
+    if (this.expiration < now && operation !== 'ack') await shhh(() => this.disconnect());
     return await this.connect();
   }
 
@@ -122,7 +122,7 @@ export class AMQPConfirmChannel
     options: ConnectOptions,
     reconnect = false,
   ): Promise<AMQPDriverConfirmChannel> {
-    if (reconnect) await this.disconnect(options); // force fresh channel
+    if (reconnect) await shhh(() => this.disconnect(options)); // force fresh channel
 
     const delay = options.delay || this.options.connectionDelay || 10;
     const retries = options.retries || this.options.connectionRetries || 10;
@@ -210,7 +210,7 @@ export class AMQPConfirmChannel
       return channel;
     } catch (e) {
       console.log(`Operation connect resulted on error ${e}, disconnecting...`);
-      await this.disconnect(options);
+      await shhh(() => this.disconnect(options));
       if (!this.retryable(e, 'connect')) throw e;
       return await this.connect(options);
     }
