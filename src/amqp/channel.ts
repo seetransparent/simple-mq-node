@@ -93,6 +93,7 @@ export class AMQPConfirmChannel
       return true;
     }
 
+    console.log('>>>', e.message);
     if (e.message.indexOf('NOT_FOUND - no queue')) {
       const match = /- no queue '([^']+|\\.)+'/.exec(e.message);
       const queue = match ? match[1] : null;
@@ -240,7 +241,6 @@ export class AMQPConfirmChannel
       } catch (e) {
         console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
         await this.ban(); // errors break channel
-        console.log(`Retryable ${this.retryable(e, name)}`);
         if (!this.retryable(e, name)) throw e;
       }
     }
