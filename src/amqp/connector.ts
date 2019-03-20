@@ -67,7 +67,7 @@ export interface AMQPOperationPullOptions extends AMQPOperationOptions {
   pull?: { correlationId?: string, autoAck?: boolean } & amqp.Options.Consume;
 }
 export interface AMQPOperationRPCOptions
-  extends AMQPOperationPushOptions, AMQPOperationPullOptions { }
+    extends AMQPOperationPushOptions, AMQPOperationPullOptions { }
 
 export interface AMQPOperationDisposeOptions extends AMQPOperationOptions { }
 
@@ -560,6 +560,9 @@ export class AMQPConnector
   ): Promise<amqp.Message> {
     const correlationId = this.correlationId(type, options);
     const responseQueue = this.responseQueue(type, options);
+    const timeout = Number.isFinite(options.timeout as number)
+      ? options.timeout as number
+      : 3600000;  // 1h
     const channel = options.channel || await this.pullChannel({
       assert: {
         // ensure request queue is available
@@ -572,31 +575,44 @@ export class AMQPConnector
           exclusive: true,
           durable: true,
           autoDelete: true,  // avoids zombie result queues
+          arguments: {
+            messageTtl: timeout,
+            expires: timeout,
+          },
         },
       },
       prefetch: 1,
     });
-    const pushOptions = {
-      channel,
-      ...options,
-      push: {
-        correlationId,
-        replyTo: responseQueue,
-        ...options.push,
-      },
-    };
-    const pullOptions = {
-      channel,
-      ...options,
-      pull: {
-        correlationId,
-        exclusive: true,
-        ...options.pull,
-      },
-    };
+
     try {
       try {
+        const pushOptions = {
+          channel,
+          ...options,
+          timeout,
+          push: {
+            correlationId,
+            replyTo: responseQueue,
+            ...options.push,
+          },
+        };
+        const start = new Date().getTime();
         await this.push(queue, type, content, pushOptions);
+
+        const remaining = timeout + start - new Date().getTime();
+        if (remaining < 0) {
+          throw new TimeoutError(`Timeout after ${timeout}ms`);
+        }
+        const pullOptions = {
+          channel,
+          ...options,
+          timeout: remaining,
+          pull: {
+            correlationId,
+            exclusive: true,
+            ...options.pull,
+          },
+        };
         return await this.pull(responseQueue, null, pullOptions);
       } finally {
         await this.dispose(responseQueue, { channel });
