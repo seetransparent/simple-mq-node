@@ -6,7 +6,7 @@ import { MessageQueueConnector, ResultMessage } from '../types';
 import { ConnectionManager, ConnectionManagerOptions } from '../base';
 import { TimeoutError } from '../errors';
 import {
-  omit, objectKey, adler32, withTimeout, sleep, shhh,
+  omit, objectKey, withTimeout, sleep, shhh,
   attachNamedListener, removeNamedListener,
 } from '../utils';
 
@@ -63,7 +63,14 @@ export interface AMQPOperationPullOptions extends AMQPOperationOptions {
   pull?: { correlationId?: string, autoAck?: boolean } & amqp.Options.Consume;
 }
 export interface AMQPOperationRPCOptions
-    extends AMQPOperationPushOptions, AMQPOperationPullOptions { }
+  extends
+    Omit<AMQPOperationPushOptions, 'channel'>,
+    Omit<AMQPOperationPullOptions, 'channel'> {
+  channels?: {
+    pull?: AMQPConfirmChannel;
+    push?: AMQPConfirmChannel;
+  };
+}
 
 export interface AMQPOperationDisposeOptions extends AMQPOperationOptions { }
 
@@ -400,7 +407,7 @@ export class AMQPConnector
    * @param options
    */
   async pullChannel(options: AMQPOperationChannelOptions = {}): Promise<AMQPConfirmChannel> {
-    const channelType = options.channelType || adler32(objectKey(options)).toString(16);
+    const channelType = options.channelType || await objectKey(options);
 
     // pop from cache
     const channels = this.channelsByType[channelType] || [];
@@ -564,63 +571,56 @@ export class AMQPConnector
     const timeout = Number.isFinite(options.timeout as number)
       ? options.timeout as number
       : 3600000;  // 1h
-    const channel = options.channel || await this.pullChannel({
-      assert: {
-        // ensure request queue is available
-        [queue]: {
-          conflict: 'ignore',
-          durable: true,
-        },
-        // create exclusive response queue
-        [responseQueue]: {
-          exclusive: true,
-          durable: true,
-          autoDelete: true,  // avoids zombie result queues
-          arguments: {
-            messageTtl: timeout,
-            expires: timeout,
+    const channels = options.channels || {};
+    const pullOptions = {
+      // Custom channel config for pull
+      // Different channel for pull and push to help channel cache to reduce overhead
+      channel: channels.pull || await this.pullChannel({
+        assert: {
+          // create exclusive response queue
+          [responseQueue]: {
+            conflict: (options.push && options.push.replyTo) ? 'ignore' : 'raise',
+            exclusive: true,
+            durable: true,
+            autoDelete: true, // avoids zombie result queues
+            arguments: {
+              messageTtl: timeout,
+              expires: timeout,
+            },
           },
         },
+        prefetch: 1,
+      }),
+      ...options,
+      timeout,
+      pull: {
+        correlationId,
+        exclusive: true,
+        ...options.pull,
       },
-      prefetch: 1,
-    });
-
+    };
+    const pushOptions = {
+      // default channel config is perfect for RPC push
+      channel: channels.push,
+      ...options,
+      timeout,
+      push: {
+        correlationId,
+        replyTo: responseQueue,
+        ...options.push,
+      },
+    };
     try {
       try {
-        const pushOptions = {
-          channel,
-          ...options,
-          timeout,
-          push: {
-            correlationId,
-            replyTo: responseQueue,
-            ...options.push,
-          },
-        };
-        const start = new Date().getTime();
+        await pullOptions.channel.connect(); // ensure response queue is created
         await this.push(queue, type, content, pushOptions);
-
-        const remaining = timeout + start - new Date().getTime();
-        if (remaining < 0) {
-          throw new TimeoutError(`Timeout after ${timeout}ms`);
-        }
-        const pullOptions = {
-          channel,
-          ...options,
-          timeout: remaining,
-          pull: {
-            correlationId,
-            exclusive: true,
-            ...options.pull,
-          },
-        };
         return await this.pull(responseQueue, null, pullOptions);
       } finally {
-        await this.dispose(responseQueue, { channel });
+        await this.dispose(responseQueue);
       }
     } finally {
-      if (!options.channel) {
-        await this.pushChannel(channel);
+      if (!channels.pull) {
+        await this.pushChannel(pullOptions.channel);
       }
     }
   }

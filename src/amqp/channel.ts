@@ -254,7 +254,6 @@ export class AMQPConfirmChannel
       } catch (e) {
         console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
         await this.ban(); // errors break channel
-        console.log(name, Array.prototype.slice.call(arguments));
         if (!this.retryable(e, name, queueAware ? args[0] : undefined)) throw e;
       }
     }
@@ -283,7 +282,6 @@ export class AMQPConfirmChannel
       } catch (e) {
         console.log(`Operation publish resulted on error ${e}, disconnecting...`);
         await this.ban();
-        console.log('publish', Array.prototype.slice.call(arguments));
         if (!this.retryable(e, 'publish', routingKey)) throw e;
       }
     }

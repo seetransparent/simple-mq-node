@@ -2,6 +2,7 @@ import * as dns from 'dns';
 import * as net from 'net';
 import * as mem from 'mem';
 import * as dom from 'domain';
+import * as zlib from 'zlib';
 import * as events from 'events';
 
 import { AnyObject } from './types';
@@ -199,29 +200,23 @@ export async function sleep(ms: number) {
   await new Promise(r => setTimeout(r, ms));
 }
 
-export function objectKey(obj: AnyObject): string {
-  const key = JSON.stringify(
-    Object
-      .entries(obj)
-      .sort(([a], [b]) => (a < b) ? -1 : 1)
-      .map(([k, v]) => [k, typeof v === 'object' && !Array.isArray(v) ? objectKey(v) : `v:${v}`]),
-  );
-  return `o:${key}`;
+export type SortedObject<T> = T | {[key: string]: SortedObject<T>}[];
+
+export function sortObject<T>(obj: T): SortedObject<T> {
+  if (typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map((o, i) => ({ [i]: sortObject(o) }));
+  return Object
+    .entries(obj)
+    .sort(([a], [b]) => (a < b) ? -1 : 1)
+    .map(([k, v]) => ({ [k]: sortObject(v) }));
 }
 
-export function adler32(data: string, sum: number = 1, base: number = 65521, nmax: number = 5552) {
-  let a = sum & 0xFFFF;
-  let b = (sum >>> 16) & 0xFFFF;
-  const buff = Buffer.from(data);
-  for (let i = 0, l = buff.length; i < l;) {
-    for (const n = Math.min(i + nmax, l); i < n; i += 1) {
-      a += buff[i] << 0;
-      b += a;
-    }
-    a %= base;
-    b %= base;
-  }
-  return ((b << 16) | a) >>> 0;
+export async function objectKey<T>(obj: T): Promise<string> {
+  const buffer = Buffer.from(JSON.stringify(sortObject(obj)));
+  const compressed = await new Promise<Buffer>((resolve, reject) => {
+    zlib.deflateRaw(buffer, { level: 1 }, (e, r) => e ? reject(e) : resolve(r));
+  });
+  return compressed.toString('base64').replace(/\=+$/, '');
 }
 
 const getHostAddresses = mem(

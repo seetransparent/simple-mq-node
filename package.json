@@ -69,7 +69,7 @@
     "@types/lru-cache": "^4.1.1",
     "@types/mem": "^1.1.2",
     "@types/uuid": "^3.4.4",
-    "amqplib": "^0.5.2",
+    "amqplib": "^0.5.3",
     "lru-cache": "^5.1.1",
     "mem": "^4.1.0",
     "ts-node": "^7.0.1",
