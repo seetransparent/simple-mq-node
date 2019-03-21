@@ -5,7 +5,6 @@ import * as dom from 'domain';
 import * as zlib from 'zlib';
 import * as events from 'events';
 
-import { AnyObject } from './types';
 import { TimeoutError } from './errors';
 
 export type PromiseAccumulatorResult<T> = T | undefined;
