@@ -14,6 +14,7 @@ interface AMQPMockConsumer {
 
 export class AMQPMockQueue {
   constructor(
+    public name: string,
     public options: amqp.Options.AssertQueue,
     public messages: amqp.Message[] = [],
     public consumers: AMQPMockConsumer[] = [],
@@ -97,7 +98,6 @@ export class AMQPMockBase extends events.EventEmitter {
 
 export interface AMQPRawMockChannel {
   channel: AMQPMockChannel;
-  banned?: boolean;
 }
 
 export class AMQPMockConnection
@@ -156,7 +156,7 @@ implements AMQPDriverConnection {
       return this.getQueue(exchange, routingKey);
     } catch (e) {
       const name = [exchange, routingKey].filter(x => x).join(':');
-      return this.queues[name] = new AMQPMockQueue(options);
+      return this.queues[name] = new AMQPMockQueue(name, options);
     }
   }
 
@@ -183,7 +183,7 @@ implements AMQPDriverConnection {
         userId: undefined,
         appId: undefined,
         clusterId: null,
-        timestamp: new Date(),
+        timestamp: Date.now(),
         correlationId: undefined,
         replyTo: undefined,
         expiration: undefined,

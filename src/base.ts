@@ -37,7 +37,7 @@ export class ConnectionManager<T> {
     return {
       ...(options as any),
       guard: options.guard || new Guard(),
-      delay: Number.isFinite(options.delay as number) ? options.delay : 100,
+      delay: Number.isFinite(options.delay as number) ? options.delay : 10,
       timeout: (options.timeout === 0) ? 0 : options.timeout || 5000,
       retries: Math.max(options.retries || 0, -1),
       banPeriod: Math.max(options.banPeriod || 5000, 0),

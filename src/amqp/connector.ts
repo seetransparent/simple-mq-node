@@ -407,7 +407,7 @@ export class AMQPConnector
    * @param options
    */
   async pullChannel(options: AMQPOperationChannelOptions = {}): Promise<AMQPConfirmChannel> {
-    const channelType = options.channelType || await objectKey(options);
+    const channelType = options.channelType || objectKey(options);
 
     // pop from cache
     const channels = this.channelsByType[channelType] || [];
@@ -487,7 +487,6 @@ export class AMQPConnector
   ): Promise<amqp.Message> {
     const consumerTag = this.consumerTag(type, options);
     const autoAck = !options.pull || options.pull.autoAck !== false; // default to true
-    const cancelAt = options.timeout ? Date.now() + options.timeout : Infinity;
     const channel = options.channel || await this.pullChannel({
       assert: {
         // ensure queue is available
@@ -502,7 +501,7 @@ export class AMQPConnector
       channel,
       queue,
       autoAck,
-      cancelAt,
+      cancelAt: Date.now() + (options.timeout || Infinity), // Important: do after pullChannel
       checkOptions: {
         type,
         correlationId: (options && options.pull) ? options.pull.correlationId : undefined,
@@ -531,13 +530,13 @@ export class AMQPConnector
           throw e;
         })
         || await (async () => {
-          const timeout = cancelAt - Date.now();
+          const timeout = commonOptions.cancelAt - Date.now();
           if (Number.isFinite(timeout) && timeout > 1) { // do not retry without timeout
             const delay = timeout > 20 ? timeout / 2 : 0;
             if (delay) await sleep(delay);
             return await this.pull(queue, type, { ...options, timeout: timeout - delay });
           }
-          throw new TimeoutError(`Timeout at ${cancelAt}`);
+          throw new TimeoutError(`Timeout at ${commonOptions.cancelAt}`);
         })()
       );
     } catch (e) {

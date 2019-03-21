@@ -211,11 +211,9 @@ export function sortObject<T>(obj: T): SortedObject<T> {
     .map(([k, v]) => ({ [k]: sortObject(v) }));
 }
 
-export async function objectKey<T>(obj: T): Promise<string> {
+export function objectKey<T>(obj: T): string {
   const buffer = Buffer.from(JSON.stringify(sortObject(obj)));
-  const compressed = await new Promise<Buffer>((resolve, reject) => {
-    zlib.deflateRaw(buffer, { level: 1 }, (e, r) => e ? reject(e) : resolve(r));
-  });
+  const compressed = zlib.deflateRawSync(buffer, { level: 1 }); // async is way slower
   return compressed.toString('base64').replace(/\=+$/, '');
 }
 
