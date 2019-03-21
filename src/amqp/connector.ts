@@ -87,11 +87,9 @@ export class AMQPConnector
   protected appId: string;
   protected idCounter: number;
 
-  protected channelsByCh: { [id: string]: AMQPConfirmChannel };
   protected channelsById: LRUCache.Cache<string, AMQPConfirmChannel>;
   protected channelsByType: { [type: string]: AMQPConfirmChannel[]};
   protected knownQueues: LRUCache.Cache<string, boolean>;
-  protected bannedChannels: Set<string>;
 
   constructor(options: AMQPConnectorOptions) {
     const opts: AMQPConnectorFullOptions = {
@@ -147,9 +145,7 @@ export class AMQPConnector
         }
       },
     });
-    this.bannedChannels = new Set();
     this.channelsByType = {};
-    this.channelsByCh = {};
     this.knownQueues = new LRUCache({ max: opts.queueCacheSize });
   }
 
@@ -350,13 +346,7 @@ export class AMQPConnector
   async channel(
     options: AMQPOperationChannelOptions = {},
   ): Promise<AMQPConfirmChannel> {
-    try {
-      await this.connect();  // avoid channel retries on connection errors
-    } catch (e) {
-      if (e instanceof TimeoutError) throw e;
-      console.log('ABNORMAL ERROR', e.message);
-      throw e;
-    }
+    await this.connect();  // avoid channel retries on connection errors
     const handlerId = this.genId('errorHandler');
     const confirmChannel = new AMQPConfirmChannel({
       queueFilter: {
@@ -364,34 +354,41 @@ export class AMQPConnector
         has: name => !!this.knownQueues.get(name),
         delete: name => this.knownQueues.del(name),
       },
-      channelFilter: this.bannedChannels,
       connect: async () => {
         const connection = await this.connect();
         const channel = await connection.createConfirmChannel();
-        if (this.channelsByCh[`${channel.ch}`]) {
-          if (this.channelsByCh[`${channel.ch}`] === confirmChannel) return channel;
-          throw new Error('Channel already in use.');
-        }
-        this.channelsByCh[`${channel.ch}`] = confirmChannel;
         attachNamedListener(
           channel,
           'error',
           handlerId,
-          () => shhh(() => confirmChannel.disconnect()),
+          () => confirmChannel.ban(),
+        );
+        attachNamedListener(
+          channel,
+          'upstreamError',
+          handlerId,
+          () => confirmChannel.ban(),
         );
         attachNamedListener(
           channel.connection,
           'error',
           handlerId,
           (e: Error) => channel.emit('upstreamError', e),
-
         );
         return channel;
       },
       disconnect: async (channel: AMQPDriverConfirmChannel) => {
-        if (this.channelsByCh[`${channel.ch}`]) delete this.channelsByCh[`${channel.ch}`];
         removeNamedListener(channel.connection, 'error', handlerId);
-        await shhh(() => channel.close());
+        if (channel._banned) {
+          // we need to delay closing because of amqplib bad behavior with
+          // rabbitmq's late error responses
+          this.connectionPromises.unconditionally(async () => {
+            await sleep(5000);
+            await channel.close();
+          });
+        } else {
+          await channel.close();
+        }
       },
       ...options,
     });

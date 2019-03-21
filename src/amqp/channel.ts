@@ -32,7 +32,6 @@ export interface AMQPConfirmChannelOptions
   connectionRetries?: number;
   connectionDelay?: number;
   queueFilter?: Filter;
-  channelFilter?: Filter;
 }
 
 export interface AMQPConfirmChannelFullOptions
@@ -44,14 +43,13 @@ export interface AMQPConfirmChannelFullOptions
   };
   inactivityTime: number;
   queueFilter: Filter;
-  channelFilter: Filter;
 }
 
 export class AMQPConfirmChannel
   extends ConnectionManager<AMQPDriverConfirmChannel>
   implements Omit<
     AMQPDriverConfirmChannel,
-    'connection' | 'ch' | // private
+    'ch' | 'connection' | // private
     'consume' | 'publish' | // overridden
     'checkQueue' | 'assertQueue' | 'prefetch' | // managed by constructor options
     'on' | 'once' | 'emit' | 'listeners' | 'removeListener' | // not an EventEmitter
@@ -79,26 +77,17 @@ export class AMQPConfirmChannel
         add: () => {},
         delete: () => {},
       },
-      channelFilter: {
-        has: () => false,
-        add: () => { },
-        delete: () => { },
-      },
       ...options,
     };
     this.expiration = 0;
   }
 
-  protected isBanned(channel: AMQPDriverConfirmChannel): boolean {
-    return this.options.channelFilter.has(`${channel.ch}`);
+  protected isBanned(channel: AMQPDriverConfirmChannel) {
+    return !!channel._banned;
   }
 
   protected setBanned(channel: AMQPDriverConfirmChannel) {
-    this.options.channelFilter.add(`${channel.ch}`);
-    setTimeout(
-      () => this.options.channelFilter.delete(`${channel.ch}`),
-      5000,
-    );
+    channel._banned = true;
   }
 
   retryable(e: Error, operation?: string, queue?: string): boolean {
@@ -115,13 +104,12 @@ export class AMQPConfirmChannel
     if (e.message.indexOf('NOT_FOUND - no queue')) {
       const match = /- no queue '([^']+|\\.)+'/.exec(e.message);
       const equeue = match ? match[1] : null;
-      console.log('>>>>>>>', equeue, queue);
       if (equeue) {
         if (this.options.queueFilter.has(equeue)) { // invalid cache
           this.options.queueFilter.delete(equeue);
         }
         if (
-          (queue && equeue !== queue) // got bugged channel
+          (queue && queue !== equeue) // got bugged channel
           || this.options.check.indexOf(equeue) > -1 // queue removed by other
           || this.options.assert[equeue] // queue removed by other
         ) {
@@ -266,6 +254,7 @@ export class AMQPConfirmChannel
       } catch (e) {
         console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
         await this.ban(); // errors break channel
+        console.log(name, Array.prototype.slice.call(arguments));
         if (!this.retryable(e, name, queueAware ? args[0] : undefined)) throw e;
       }
     }
@@ -294,6 +283,7 @@ export class AMQPConfirmChannel
       } catch (e) {
         console.log(`Operation publish resulted on error ${e}, disconnecting...`);
         await this.ban();
+        console.log('publish', Array.prototype.slice.call(arguments));
         if (!this.retryable(e, 'publish', routingKey)) throw e;
       }
     }

@@ -44,6 +44,13 @@ export class ConnectionManager<T> {
     };
   }
 
+  protected async unsafeDisconnect(options: ConnectOptions = {}): Promise<void> {
+    if (!this.connection) return;
+    const connection = this.connection;
+    await withDomain(() => this.connectionOptions.disconnect(connection));
+    this.connection = null;
+  }
+
   protected isBanned(connection: T) {
     return false; // stub
   }
@@ -98,9 +105,9 @@ export class ConnectionManager<T> {
     });
     return await guard.exec(async () => {
       if (!this.connection) return;
-      await shhh(() => this.disconnect());
       this.setBanned(this.connection);
-      this.connection = null;
+      await shhh(() => this.unsafeDisconnect(options));
+      this.connection = null; // ensure unset on silent fail
     });
   }
 
@@ -109,12 +116,7 @@ export class ConnectionManager<T> {
       ...this.connectionOptions,
       ...options,
     });
-    return await guard.exec(async () => {
-      if (!this.connection) return;
-      const connection = this.connection;
-      await withDomain(() => this.connectionOptions.disconnect(connection));
-      this.connection = null;
-    });
+    return await guard.exec(async () => this.unsafeDisconnect(options));
   }
 
   async close(options: ConnectOptions = {}): Promise<void> {

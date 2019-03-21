@@ -280,11 +280,10 @@ describe('amqp', () => {
         setTimeout(
           async () => {
             // select the working channel
-            let channel = connection.channels.filter(c => c.alive)[0];
+            let channel = connection.mockChannels.filter(c => c.alive)[0];
             while (!channel || !channel.listenerCount('error')) {
-              console.log(connection.channels.length);
               await sleep(10);
-              channel = connection.channels.filter(c => c.alive)[0];
+              channel = connection.mockChannels.filter(c => c.alive)[0];
             }
 
             [ // register errors
@@ -447,7 +446,7 @@ describe('amqp', () => {
         await connector.push('w', 'msg', Buffer.from('test'));
         expect(connection.createdChannels).toBe(4); // x2 due queue checkQueues
         expect(connection.closedChannels).toBe(2); // 2 due checkQueues
-        expect(connection.channels).toHaveLength(2);
+        expect(connection.mockChannels).toHaveLength(2);
       });
 
       it('expires old caches (honoring maxCacheSize)', async () => {
@@ -464,7 +463,7 @@ describe('amqp', () => {
         await connector.push('e', 'msg', Buffer.from('test'));
         expect(connection.createdChannels).toBe(10); // x2 due queue checkQueues
         expect(connection.closedChannels).toBe(7); // 5 due checkQueues, 2 due cache expiration
-        expect(connection.channels).toHaveLength(3);
+        expect(connection.mockChannels).toHaveLength(3);
       });
     });
 

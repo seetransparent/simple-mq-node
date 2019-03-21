@@ -95,11 +95,17 @@ export class AMQPMockBase extends events.EventEmitter {
   }
 }
 
+export interface AMQPRawMockChannel {
+  channel: AMQPMockChannel;
+  banned?: boolean;
+}
+
 export class AMQPMockConnection
 extends AMQPMockBase
 implements AMQPDriverConnection {
   public queues: { [name: string]: AMQPMockQueue } = {};
-  public channels: AMQPMockChannel[] = [];
+  public channels: (AMQPRawMockChannel | null)[] = [];
+  public mockChannels: AMQPMockChannel[] = [];
   public createdChannels: number = 0;
   public closedChannels: number = 0;
   public slow: boolean = true;
@@ -116,7 +122,13 @@ implements AMQPDriverConnection {
   async createConfirmChannel(): Promise<AMQPMockChannel> {
     this.wannaFail('createConfirmChannel');
     const channel = new AMQPMockChannel({ connection: this, confirm: true });
-    this.channels.push(channel);
+
+    // allocation logic
+    const index = this.channels.indexOf(null);
+    channel.ch = index > -1 ? index : this.channels.length;
+
+    this.mockChannels.push(channel);
+    this.channels[channel.ch] = { channel };
     this.createdChannels += 1;
     return channel;
   }
@@ -191,7 +203,7 @@ extends AMQPMockBase
 implements AMQPDriverConfirmChannel {
   public confirm: boolean;
   public connection: AMQPMockConnection;
-  public ch: Number;
+  public ch: number;
   protected errored: Error;
   protected closed: boolean;
 
@@ -206,7 +218,6 @@ implements AMQPDriverConfirmChannel {
     this.connection = connection;
     this.confirm = confirm;
     this.closed = false;
-    this.ch = connection.createdChannels + 1;
     this.once('error', (e) => {
       this.errored = e;
       if (!this.closed) process.nextTick(() => this.emit('close'));
@@ -234,8 +245,9 @@ implements AMQPDriverConfirmChannel {
 
   async close(): Promise<void> {
     this.wannaFail('close');
-    const index = this.connection.channels.indexOf(this);
-    this.connection.channels.splice(index, 1);
+    const index = this.connection.mockChannels.indexOf(this);
+    this.connection.mockChannels.splice(index, 1);
+    this.connection.channels[this.ch] = null;
     this.connection.closedChannels += 1;
     this.closed = true;
     this.emit('close');
