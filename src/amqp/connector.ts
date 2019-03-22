@@ -24,7 +24,9 @@ export interface AMQPConnectorOptions {
   connectionRetries?: number;
   connectionDelay?: number;
   channelCacheSize?: number;
+  channelBanningAge?: number;
   queueCacheSize?: number;
+  queueCacheAge?: number;
 }
 
 interface AMQPConnectorFullOptions
@@ -36,7 +38,9 @@ interface AMQPConnectorFullOptions
   uri: string;
   timeout: number;
   channelCacheSize: number;
+  channelBanningAge: number;
   queueCacheSize: number;
+  queueCacheAge: number;
 }
 
 interface CheckOptions extends Pick<amqp.MessageProperties, 'correlationId' | 'type'> { }
@@ -116,7 +120,9 @@ export class AMQPConnector
       connectionRetries: 10,
       connectionDelay: 1000,
       channelCacheSize: 100,
+      channelBanningAge: 2000,
       queueCacheSize: 1000,
+      queueCacheAge: 10000,
       ...options,
     };
     super({
@@ -134,11 +140,11 @@ export class AMQPConnector
     this.channelCache = [];
     this.knownQueues = new LRUCache({
       max: opts.queueCacheSize,
-      maxAge: 10000,
+      maxAge: opts.queueCacheAge,
     });
     this.bannedChannels = new LRUCache({
       max: opts.channelCacheSize,
-      maxAge: 2000,
+      maxAge: opts.channelBanningAge,
       dispose: (key, channel) => this.connectionPromises.push(shhh(() => channel.close())),
     });
 
@@ -153,7 +159,10 @@ export class AMQPConnector
   }
 
   async connect(options: ConnectOptions = {}): Promise<AMQPDriverConnection> {
-    this.cleanupInterval = setInterval(() => this.bannedChannels.prune(), 2000);
+    this.cleanupInterval = setInterval(
+      () => this.bannedChannels.prune(),
+      this.options.channelBanningAge,
+    );
     return await super.connect(options);
   }
 
