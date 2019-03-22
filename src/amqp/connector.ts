@@ -3,7 +3,7 @@ import * as uuid4 from 'uuid/v4';
 import * as LRUCache from 'lru-cache';
 
 import { MessageQueueConnector, ResultMessage } from '../types';
-import { ConnectionManager, ConnectionManagerOptions } from '../base';
+import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
 import { TimeoutError } from '../errors';
 import {
   omit, withTimeout, sleep, shhh,
@@ -88,7 +88,9 @@ export class AMQPConnector
   protected idCounter: number;
 
   protected channelCache: AMQPDriverConfirmChannel[];
+  protected bannedChannels: LRUCache.Cache<string, AMQPDriverConfirmChannel>;
   protected knownQueues: LRUCache.Cache<string, boolean>;
+  protected cleanupInterval: NodeJS.Timer;
 
   constructor(options: AMQPConnectorOptions) {
     const opts: AMQPConnectorFullOptions = {
@@ -114,7 +116,7 @@ export class AMQPConnector
       connectionRetries: 10,
       connectionDelay: 1000,
       channelCacheSize: 100,
-      queueCacheSize: 10000,
+      queueCacheSize: 1000,
       ...options,
     };
     super({
@@ -131,12 +133,25 @@ export class AMQPConnector
 
     this.channelCache = [];
     this.knownQueues = new LRUCache({ max: opts.queueCacheSize });
+    this.bannedChannels = new LRUCache({
+      max: opts.channelCacheSize,
+      maxAge: 2000,
+      dispose: (key, channel) => this.connectionPromises.push(shhh(() => channel.close())),
+    });
+
   }
 
-  async disconnect(): Promise<void> {
+  async disconnect(options: ConnectOptions = {}): Promise<void> {
+    clearInterval(this.cleanupInterval);
     this.channelCache.splice(0, this.channelCache.length);
+    this.bannedChannels.reset();
     this.knownQueues.reset();
-    return await super.disconnect();
+    return await super.disconnect(options);
+  }
+
+  async connect(options: ConnectOptions = {}): Promise<AMQPDriverConnection> {
+    this.cleanupInterval = setInterval(() => this.bannedChannels.prune(), 2000);
+    return await super.connect(options);
   }
 
   protected genId(name: string, type?: string | null) {
@@ -331,8 +346,9 @@ export class AMQPConnector
   ): Promise<AMQPConfirmChannel> {
     await this.connect();  // avoid channel retries on connection errors
     const handlerId = this.genId('errorHandler');
+    const channelId = this.genId('channelId');
     const confirmChannel = new AMQPConfirmChannel({
-      channelId: this.genId('channelId'),
+      channelId,
       queueFilter: {
         add: name => this.knownQueues.set(name, true),
         has: name => !!this.knownQueues.get(name),
@@ -373,12 +389,7 @@ export class AMQPConnector
         if (channel._banned) {
           // we need to delay closing because of amqplib bad behavior with
           // rabbitmq's late error responses being sent to reused slots
-          this.connectionPromises.push(
-            shhh(async () => {
-              await sleep(2000);
-              await shhh(() => channel.close());
-            }),
-          );
+          this.bannedChannels.set(`${channelId}:${channel.ch}`, channel);
         } else if (channel._expiration && channel._expiration <= Date.now()) {
           await shhh(() => channel.close());
         } else if (this.channelCache.length < this.options.channelCacheSize) {

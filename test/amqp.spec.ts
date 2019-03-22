@@ -3,7 +3,6 @@ import * as errors from '../src/errors';
 import * as mock from '../src/amqp/driver-mock';
 import { AnyObject } from '../src/types';
 import { resolveConnection } from '../src/amqp/utils';
-import { sleep } from '../src/utils';
 
 describe('amqp', () => {
   describe('AMQPChannel', () => {
@@ -437,7 +436,7 @@ describe('amqp', () => {
         await connector.push('q', 'msg', Buffer.from('test'));
         await connector.push('q', 'msg', Buffer.from('test'));
         await connector.push('w', 'msg', Buffer.from('test'));
-        await connector.close();
+        await connector.disconnect(); // banned connection flush
         expect(connection.createdChannels).toBe(3); // 2 failed checks, 1 alive
         expect(connection.closedChannels).toBe(2); // 2 failed checks
         expect(connection.mockChannels).toHaveLength(1); // 1 alive
