@@ -12,13 +12,15 @@ describe('utils', () => {
     });
   });
   describe('attachNamedListener', () => {
-    it('should attach events', async () => {
+    it('should attach event handlers', async () => {
       const emitter = new EventEmitter();
       const promise = new Promise(r => utils.attachNamedListener(emitter, 'patata', 'h', r));
       emitter.emit('patata', 'jiji');
       await expect(promise).resolves.toBe('jiji');
     });
-    it('should attach events', async () => {
+  });
+  describe('removeNamedListener', () => {
+    it('should remove event handlers', async () => {
       const emitter = new EventEmitter();
       let received: string | undefined;
       utils.attachNamedListener(emitter, 'patata', 'h', (v: string) => received = v);
