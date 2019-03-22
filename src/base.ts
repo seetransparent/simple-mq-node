@@ -47,10 +47,10 @@ export class ConnectionManager<T> {
   protected async unsafeDisconnect(options: ConnectOptions = {}): Promise<void> {
     if (!this.connection) return;
     const connection = this.connection;
-    await withDomain(() => Promise.all([
-      this.connectionPromises,
-      this.connectionOptions.disconnect(connection),
-    ]));
+    await withDomain(async () => {
+      await this.connectionPromises;
+      await this.connectionOptions.disconnect(connection);
+    });
     this.connection = null;
   }
 

@@ -155,7 +155,6 @@ export class AMQPConnector
     this.channelCache.splice(0, this.channelCache.length);
     this.bannedChannels.reset();
     this.knownQueues.reset();
-    await this.connectionPromises; // before entering connection guard
     return await super.disconnect(options);
   }
 
