@@ -11,6 +11,17 @@ describe('utils', () => {
       await expect(utils.resolveHost('172.1.189.1')).resolves.toBe('172.1.189.1');
     });
   });
+  describe('shhh', () => {
+    it('should silent everything', async () => {
+      const cases = [
+        () => { throw new Error('error'); },
+        () => Promise.reject(new Error('error')),
+      ];
+      for (const fnc of cases) {
+        await expect(utils.shhh(fnc)).resolves;
+      }
+    });
+  });
   describe('attachNamedListener', () => {
     it('should attach event handlers', async () => {
       const emitter = new EventEmitter();
