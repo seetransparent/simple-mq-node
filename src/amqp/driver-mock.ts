@@ -268,7 +268,12 @@ implements AMQPDriverConfirmChannel {
 
   async checkQueue(name: string): Promise<amqp.Replies.AssertQueue> {
     this.wannaFail('checkQueue');
-    if (!this.connection.queues[name]) throw new Error('queue not found'); // TODO
+    if (!this.connection.queues[name]) {
+      throw new Error(
+        'Channel closed by server: 404(NOT - FOUND) with message '
+        + `NOT_FOUND - no queue \'${name}\' in vhost \'/\'`,
+      );
+    }
     return this.assertQueue(name);
   }
 

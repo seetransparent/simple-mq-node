@@ -7,11 +7,12 @@ export namespace AMQPDriverConfirmChannel {
     'cancel' | 'prefetch' | 'ack' | 'reject';
 }
 
-export interface AMQPDriverConfirmChannel
-  extends Pick<events.EventEmitter, 'on' | 'once' | 'emit' | 'listeners' | 'removeListener'>
-{
-  _banned?: boolean; // ours
+export interface AMQPDriverConfirmChannel extends events.EventEmitter {
+  // ours
+  _banned?: Error;
+  _expiration?: number;
 
+  // amqplib private
   connection: events.EventEmitter; // not AMQPDriverConnection!
   ch: number;
 
@@ -62,7 +63,7 @@ export interface AMQPDriverConfirmChannel
 
 export interface AMQPDriverConnection<
   T extends AMQPDriverConfirmChannel = AMQPDriverConfirmChannel,
-> extends Pick<events.EventEmitter, 'on' | 'listeners' | 'removeListener' | 'setMaxListeners'> {
+> extends events.EventEmitter {
   close(): PromiseLike<void>;
   createConfirmChannel(): PromiseLike<T>;
 }

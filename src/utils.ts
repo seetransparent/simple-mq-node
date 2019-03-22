@@ -2,7 +2,6 @@ import * as dns from 'dns';
 import * as net from 'net';
 import * as mem from 'mem';
 import * as dom from 'domain';
-import * as zlib from 'zlib';
 import * as events from 'events';
 
 import { TimeoutError } from './errors';
@@ -90,8 +89,13 @@ interface AttachedNamedListenerHandler extends Function {
   _simpleMQNodeAttachedNamedListenerName?: string;
 }
 
+export interface NamedListenerEmitter extends Pick<
+  events.EventEmitter,
+  'on' | 'listeners' | 'removeListener' | 'setMaxListeners' | 'getMaxListeners'
+  >{ }
+
 export async function attachNamedListener<T extends Function>(
-  emitter: Pick<events.EventEmitter, 'on' | 'listeners' | 'removeListener'>,
+  emitter: NamedListenerEmitter,
   event: string,
   name: string,
   handler: T,
@@ -104,17 +108,27 @@ export async function attachNamedListener<T extends Function>(
       { _simpleMQNodeAttachedNamedListenerName: name },
     ) as AttachedNamedListenerHandler,
   );
+  const maxListeners = emitter.getMaxListeners();
+  if (maxListeners < Number.MAX_SAFE_INTEGER) {
+    emitter.setMaxListeners(maxListeners + 1);
+  }
 }
 
 export async function removeNamedListener<T extends Function>(
-  emitter: Pick<events.EventEmitter, 'listeners' | 'removeListener'>,
+  emitter: NamedListenerEmitter,
   event: string,
   name: string,
 ) {
+  let removed = 0;
   for (const listener of emitter.listeners(event) as AttachedNamedListenerHandler[]) {
     if (listener._simpleMQNodeAttachedNamedListenerName === name) {
+      removed += 1;
       emitter.removeListener('name', listener);
     }
+  }
+  const maxListeners = emitter.getMaxListeners();
+  if (maxListeners < Number.MAX_SAFE_INTEGER) {
+    emitter.setMaxListeners(Math.max(10, maxListeners - removed));
   }
 }
 
@@ -197,23 +211,6 @@ export async function withTimeout<T>(
 
 export async function sleep(ms: number) {
   await new Promise(r => setTimeout(r, ms));
-}
-
-export type SortedObject<T> = T | {[key: string]: SortedObject<T>}[];
-
-export function sortObject<T>(obj: T): SortedObject<T> {
-  if (typeof obj !== 'object') return obj;
-  if (Array.isArray(obj)) return obj.map((o, i) => ({ [i]: sortObject(o) }));
-  return Object
-    .entries(obj)
-    .sort(([a], [b]) => (a < b) ? -1 : 1)
-    .map(([k, v]) => ({ [k]: sortObject(v) }));
-}
-
-export function objectKey<T>(obj: T): string {
-  const buffer = Buffer.from(JSON.stringify(sortObject(obj)));
-  const compressed = zlib.deflateRawSync(buffer, { level: 1 }); // async is way slower
-  return compressed.toString('base64').replace(/\=+$/, '');
 }
 
 const getHostAddresses = mem(

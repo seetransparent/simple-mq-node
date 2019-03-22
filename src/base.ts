@@ -51,14 +51,6 @@ export class ConnectionManager<T> {
     this.connection = null;
   }
 
-  protected isBanned(connection: T) {
-    return false; // stub
-  }
-
-  protected setBanned(connection: T) {
-
-  }
-
   async connect(options: ConnectOptions = {}): Promise<T> {
     const { retries, delay, connect, disconnect, timeout, guard } = this.withConnectionDefaults({
       ...this.connectionOptions,
@@ -73,9 +65,6 @@ export class ConnectionManager<T> {
           for (let retry = -1; retry < retries; retry += 1) {
             try {
               const connection = await withDomain(connect);
-              if (this.isBanned(connection)) {
-                continue;
-              }
               if (timeouted) {
                 await disconnect(connection);
                 throw new TimeoutError('Timeout reached');
@@ -96,19 +85,6 @@ export class ConnectionManager<T> {
         },
       ),
     );
-  }
-
-  async ban(options: ConnectOptions = {}): Promise<void> {
-    const { guard } = this.withConnectionDefaults({
-      ...this.connectionOptions,
-      ...options,
-    });
-    return await guard.exec(async () => {
-      if (!this.connection) return;
-      this.setBanned(this.connection);
-      await shhh(() => this.unsafeDisconnect(options));
-      this.connection = null; // ensure unset on silent fail
-    });
   }
 
   async disconnect(options: ConnectOptions = {}): Promise<void> {

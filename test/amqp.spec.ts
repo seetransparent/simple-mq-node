@@ -280,19 +280,12 @@ describe('amqp', () => {
         setTimeout(
           async () => {
             // select the working channel
-            let channel = connection.mockChannels.filter(c => c.alive)[0];
-            while (!channel || !channel.listenerCount('error')) {
-              await sleep(10);
-              channel = connection.mockChannels.filter(c => c.alive)[0];
-            }
-
             [ // register errors
               'connect',
               'createConfirmChannel',
               'consume',
             ].forEach(op => connection.failing[op] = error);
-
-            channel.emit('error', error);
+            connection.mockChannels.forEach(c => c.emit('error', error));
           },
           10,
         );
@@ -436,7 +429,7 @@ describe('amqp', () => {
     });
 
     describe('cache', () => {
-      it('reuses channels based on config', async () => {
+      it('reuses channels', async () => {
         const connection = new mock.AMQPMockConnection();
         const connector = new lib.AMQPConnector({ name: 'test', connect: () => connection });
         await connector.push('q', 'msg', Buffer.from('test'));
@@ -444,9 +437,10 @@ describe('amqp', () => {
         await connector.push('q', 'msg', Buffer.from('test'));
         await connector.push('q', 'msg', Buffer.from('test'));
         await connector.push('w', 'msg', Buffer.from('test'));
-        expect(connection.createdChannels).toBe(4); // x2 due queue checkQueues
-        expect(connection.closedChannels).toBe(2); // 2 due checkQueues
-        expect(connection.mockChannels).toHaveLength(2);
+        await connector.close();
+        expect(connection.createdChannels).toBe(3); // 2 failed checks, 1 alive
+        expect(connection.closedChannels).toBe(2); // 2 failed checks
+        expect(connection.mockChannels).toHaveLength(1); // 1 alive
       });
 
       it('expires old caches (honoring maxCacheSize)', async () => {
@@ -456,13 +450,28 @@ describe('amqp', () => {
           channelCacheSize: 3,
           connect: () => connection,
         });
-        await connector.push('a', 'msg', Buffer.from('test'));
-        await connector.push('b', 'msg', Buffer.from('test'));
-        await connector.push('c', 'msg', Buffer.from('test'));
-        await connector.push('d', 'msg', Buffer.from('test'));
-        await connector.push('e', 'msg', Buffer.from('test'));
-        expect(connection.createdChannels).toBe(10); // x2 due queue checkQueues
-        expect(connection.closedChannels).toBe(7); // 5 due checkQueues, 2 due cache expiration
+        const channels = await Promise.all([
+          connector.channel(),
+          connector.channel(),
+          connector.channel(),
+          connector.channel(),
+          connector.channel(),
+        ]);
+
+        for (const channel of channels) {
+          await channel.connect();
+        }
+
+        expect(connection.createdChannels).toBe(5);
+        expect(connection.closedChannels).toBe(0);
+        expect(connection.mockChannels).toHaveLength(5);
+
+        for (const channel of channels) {
+          await channel.disconnect();
+        }
+
+        expect(connection.createdChannels).toBe(5);
+        expect(connection.closedChannels).toBe(2);
         expect(connection.mockChannels).toHaveLength(3);
       });
     });
