@@ -343,6 +343,7 @@ describe('amqp', () => {
           await connector.disconnect();
         }
       });
+    });
 
     describe('consume', () => {
       it('should consume a message from rpc and return a value', async () => {
