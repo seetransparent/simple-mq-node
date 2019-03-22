@@ -1,5 +1,5 @@
 import { AnyObject } from './types';
-import { Guard, PromiseAccumulator, withTimeout, withDomain, sleep, shhh } from './utils';
+import { Guard, PromiseAccumulator, withTimeout, withDomain, sleep } from './utils';
 import { TimeoutError } from './errors';
 
 export interface ConnectOptions {
