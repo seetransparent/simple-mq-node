@@ -123,7 +123,7 @@ export async function removeNamedListener<T extends Function>(
   for (const listener of emitter.listeners(event) as AttachedNamedListenerHandler[]) {
     if (listener._simpleMQNodeAttachedNamedListenerName === name) {
       removed += 1;
-      emitter.removeListener('name', listener);
+      emitter.removeListener(event, listener);
     }
   }
   const maxListeners = emitter.getMaxListeners();
