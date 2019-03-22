@@ -132,7 +132,10 @@ export class AMQPConnector
     this.idCounter = 0;
 
     this.channelCache = [];
-    this.knownQueues = new LRUCache({ max: opts.queueCacheSize });
+    this.knownQueues = new LRUCache({
+      max: opts.queueCacheSize,
+      maxAge: 10000,
+    });
     this.bannedChannels = new LRUCache({
       max: opts.channelCacheSize,
       maxAge: 2000,
