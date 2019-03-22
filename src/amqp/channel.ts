@@ -86,7 +86,7 @@ export class AMQPConfirmChannel
       return true;
     }
 
-    if (e.message.indexOf('NOT_FOUND - no queue')) {
+    if (e.message.indexOf('NOT_FOUND - no queue') > -1) {
       const match = /- no queue '([^']+|\\.)+'/.exec(e.message);
       const equeue = match ? match[1] : null;
       if (equeue) {
