@@ -108,6 +108,8 @@ implements AMQPDriverConnection {
   public mockChannels: AMQPMockChannel[] = [];
   public createdChannels: number = 0;
   public closedChannels: number = 0;
+  public createdQueues: number = 0;
+  public removedQueues: number = 0;
   public slow: boolean = true;
 
   constructor(options: { slow?: boolean } = {}) {
@@ -155,6 +157,7 @@ implements AMQPDriverConnection {
     try {
       return this.getQueue(exchange, routingKey);
     } catch (e) {
+      this.createdQueues += 1;
       const name = [exchange, routingKey].filter(x => x).join(':');
       return this.queues[name] = new AMQPMockQueue(name, options);
     }
@@ -287,6 +290,7 @@ implements AMQPDriverConfirmChannel {
     const messageCount = queue.messages.length;
     if (options.ifEmpty && messageCount) return { messageCount };
     delete this.connection.queues[name];
+    this.connection.removedQueues += 1;
     return { messageCount };
   }
 
