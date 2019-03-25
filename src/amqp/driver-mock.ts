@@ -118,11 +118,11 @@ implements AMQPDriverConnection {
   public closedChannels: number = 0;
   public createdQueues: number = 0;
   public removedQueues: number = 0;
-  public slow: boolean = true;
+  public slow: boolean = false;
 
   constructor(options: { slow?: boolean } = {}) {
     super();
-    this.slow = options.slow !== false;
+    this.slow = !!options.slow;
   }
 
   async close(): Promise<void> {

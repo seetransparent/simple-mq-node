@@ -6,7 +6,7 @@ import { MessageQueueConnector, ResultMessage } from '../types';
 import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
 import { TimeoutError } from '../errors';
 import {
-  omit, withTimeout, sleep, shhh,
+  omit, withTimeout, sleep, shhh, Timer,
   attachNamedListener, removeNamedListener,
 } from '../utils';
 
@@ -53,6 +53,7 @@ interface QueueOptions {
   name: string;
   assert: AMQPConfirmChannelOptions['assert'];
   cacheable: boolean;
+  timeout?: number;
 }
 
 class DuplicatedMessage extends Error { }
@@ -237,23 +238,22 @@ export class AMQPConnector
     return this.genId('consumer', type);
   }
 
-  protected pullQueue(type?: string | null, options?: AMQPOperationRPCOptions): QueueOptions {
-    if (options) {
-      if (options.push && options.push.replyTo) {
-        const name = options.push.replyTo;
-        return {
-          name,
-          assert: {
-            [name]: {
-              conflict: 'ignore',
-            },
+  protected pullQueue(type?: string | null, options: AMQPOperationRPCOptions = {}): QueueOptions {
+    if (options.push && options.push.replyTo) {
+      const name = options.push.replyTo;
+      return {
+        name,
+        assert: {
+          [name]: {
+            conflict: 'ignore',
           },
-          cacheable: false,
-        };
-      }
-      if (options.channel) {
-        throw new Error('Option push.replyTo is mandatory when RPC channels are given');
-      }
+        },
+        cacheable: false,
+        timeout: options.timeout,
+      };
+    }
+    if (options.channel) {
+      throw new Error('Option push.replyTo is mandatory when RPC channels are given');
     }
     let name: string | undefined = this.queuePool.shift();
     if (name) {
@@ -277,6 +277,7 @@ export class AMQPConnector
         },
       },
       cacheable: true,
+      timeout: Math.min(options.timeout || Infinity, this.options.queuePoolAge),
     };
   }
 
@@ -554,12 +555,11 @@ export class AMQPConnector
         correlationId: (options && options.pull) ? options.pull.correlationId : undefined,
       },
     };
-
     try {
       return (
         (
           passive
-          ? undefined
+          ? null
           : await this.getMessage({
             ...commonOptions,
             getOptions: {
@@ -616,10 +616,6 @@ export class AMQPConnector
   ): Promise<amqp.Message> {
     const correlationId = this.correlationId(type, options);
     const responseQueue = this.pullQueue(type, options);
-    const timeout = Number.isFinite(options.timeout as number)
-      ? options.timeout as number
-      : this.options.queuePoolAge;
-
     const commonOptions = {
       // Custom channel config for pull
       // Different channel for pull and push to help channel cache to reduce overhead
@@ -636,7 +632,7 @@ export class AMQPConnector
         prefetch: 1,
       }),
       ...options,
-      timeout,
+      timeout: responseQueue.timeout,
       pull: {
         correlationId,
         exclusive: true,
@@ -651,9 +647,23 @@ export class AMQPConnector
       },
     };
     try {
-      await commonOptions.channel.connect(); // ensure response queue is created
+      const timer = new Timer();
+      console.log('push');
       await this.push(queue, type, content, commonOptions);
-      return await this.pull(responseQueue.name, null, commonOptions);
+      if (!commonOptions.timeout) { // only with replyTo
+        console.log('pull no timeout');
+        return await this.pull(responseQueue.name, null, commonOptions);
+      }
+      const pullOptions = {
+        ...commonOptions,
+        timeout: Math.max(0, Math.ceil(commonOptions.timeout - timer.elapsed)),
+      };
+      if (pullOptions.timeout) {
+        console.log('pull timeout', pullOptions.timeout);
+        return await this.pull(responseQueue.name, null, pullOptions);
+      }
+      console.log(commonOptions.timeout, pullOptions.timeout);
+      throw new TimeoutError(`Timeout after ${commonOptions.timeout}ms`);
     } finally {
       await this.pushQueue(responseQueue, commonOptions.channel);
       if (!options.pull) await commonOptions.channel.disconnect();

@@ -16,6 +16,19 @@ export interface PromiseAccumulatorOptions {
   autocleanup?: boolean;
 }
 
+export class Timer {
+  protected hrstart: [number, number];
+  constructor() {
+    this.hrstart = process.hrtime();
+  }
+  protected toMs(hrtime: [number, number]): number {
+    return hrtime[0] * 1e3 + hrtime[1] * 1e-6;
+  }
+  get elapsed(): number {
+    return this.toMs(process.hrtime(this.hrstart));
+  }
+}
+
 export class PromiseAccumulator<T = any> implements PromiseLike<PromiseAccumulatorResult<T>[]> {
   public rejections: any[] = [];
   protected options: PromiseAccumulatorOptions;

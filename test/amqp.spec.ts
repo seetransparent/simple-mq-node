@@ -345,21 +345,19 @@ describe('amqp', () => {
       });
 
       it('reuses response queues', async () => {
-        const connection = new mock.AMQPMockConnection({ slow: true });
+        const connection = new mock.AMQPMockConnection();
         const connector = new lib.AMQPConnector({
           name: 'test',
           connect: () => connection,
         });
         const rpc = async (queue: string, message: string) => {
           const publisher = connector.rpc(queue, 'correct', Buffer.from(message));
-          const request = await connector.pull(queue, 'correct');
-          const { correlationId, replyTo } = request.properties;
-          await connector.push(
-            replyTo,
-            'rpc-response',
-            request.content,
-            { push: { correlationId } },
-          );
+          await connector.consume(queue, null, (message) => {
+            return {
+              break: true,
+              content: message.content,
+            };
+          });
           return await publisher;
         };
         await rpc('rpc-queue', 'patata');
@@ -375,21 +373,19 @@ describe('amqp', () => {
       });
 
       it('discard invalid messages on response queues', async () => {
-        const connection = new mock.AMQPMockConnection({ slow: true });
+        const connection = new mock.AMQPMockConnection();
         const connector = new lib.AMQPConnector({
           name: 'test',
           connect: () => connection,
         });
         const rpc = async (queue: string, message: string) => {
           const publisher = connector.rpc(queue, 'correct', Buffer.from(message));
-          const request = await connector.pull(queue, 'correct');
-          const { correlationId, replyTo } = request.properties;
-          await connector.push(
-            replyTo,
-            'rpc-response',
-            request.content,
-            { push: { correlationId } },
-          );
+          await connector.consume(queue, null, (message) => {
+            return {
+              break: true,
+              content: message.content,
+            };
+          });
           return await publisher;
         };
         await rpc('rpc-queue', 'patata');
