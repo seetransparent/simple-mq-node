@@ -1,7 +1,6 @@
 import * as lib from '../src/main';
 import * as errors from '../src/errors';
 import * as mock from '../src/amqp/driver-mock';
-import * as amqp from 'amqplib';
 import { AnyObject } from '../src/types';
 import { resolveConnection } from '../src/amqp/utils';
 
@@ -373,6 +372,38 @@ describe('amqp', () => {
 
         await connector.disconnect();
         expect(connection.removedQueues).toBe(1);
+      });
+
+      it('discard invalid messages on response queues', async () => {
+        const connection = new mock.AMQPMockConnection({ slow: true });
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connect: () => connection,
+        });
+        const rpc = async (queue: string, message: string) => {
+          const publisher = connector.rpc(queue, 'correct', Buffer.from(message));
+          const request = await connector.pull(queue, 'correct');
+          const { correlationId, replyTo } = request.properties;
+          await connector.push(
+            replyTo,
+            'rpc-response',
+            request.content,
+            { push: { correlationId } },
+          );
+          return await publisher;
+        };
+        await rpc('rpc-queue', 'patata');
+        const queue = Object.keys(connection.queues).filter(x => /^response:/.test(x))[0];
+        await connector.push(queue, 'spurious', Buffer.from('nooope'));
+        const result = await rpc('other-queue', 'patata');
+        expect(result.content.toString()).toBe('patata');
+        expect(connection.queues[queue].messages).toHaveLength(0);
+
+        // 3 publish, 1 response
+        expect(connection.removedQueues).toBe(0);
+        expect(connection.createdQueues).toBe(3);
+
+        await connector.disconnect();
       });
     });
 

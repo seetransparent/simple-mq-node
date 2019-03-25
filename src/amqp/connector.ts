@@ -74,7 +74,12 @@ export interface AMQPOperationPushOptions extends AMQPOperationOptions {
 }
 
 export interface AMQPOperationPullOptions extends AMQPOperationOptions {
-  pull?: { correlationId?: string, autoAck?: boolean, passive?: boolean } & amqp.Options.Consume;
+  pull?: amqp.Options.Consume & {
+    correlationId?: string,
+    autoAck?: boolean,
+    passive?: boolean,
+    discard?: boolean,
+  };
 }
 export interface AMQPOperationRPCOptions
   extends AMQPOperationPushOptions, AMQPOperationPullOptions { }
@@ -294,12 +299,13 @@ export class AMQPConnector
   }
 
   protected async getMessage({
-    channel, queue, autoAck, cancelAt, getOptions, checkOptions,
+    channel, queue, autoAck, cancelAt, discard, getOptions, checkOptions,
   }: {
     channel: AMQPConfirmChannel;
     queue: string;
     autoAck: boolean;
     cancelAt: number;
+    discard: boolean;
     getOptions: amqp.Options.Get;
     checkOptions: CheckOptions;
   }): Promise<amqp.GetMessage | null> {
@@ -313,7 +319,7 @@ export class AMQPConnector
         return message;
       }
 
-      await channel.reject(message, true); // requeue
+      await channel.reject(message, !discard); // requeue
 
       if (Date.now() > cancelAt) {
         throw new TimeoutError(`Timeout reached at ${cancelAt}`);
@@ -333,12 +339,13 @@ export class AMQPConnector
   }
 
   protected async consumeOnce({
-    channel, queue, autoAck, cancelAt, consumeOptions, checkOptions,
+    channel, queue, autoAck, cancelAt, discard, consumeOptions, checkOptions,
   }: {
     channel: AMQPConfirmChannel;
     queue: string;
     autoAck: boolean;
     cancelAt: number;
+    discard: boolean,
     consumeOptions: amqp.Options.Consume & { consumerTag: string };
     checkOptions: CheckOptions;
   }): Promise<amqp.ConsumeMessage> {
@@ -379,7 +386,7 @@ export class AMQPConnector
       throw e;
     } finally {
       for (const message of unwanted) {
-        await shhh(() => channel.reject(message, true));
+        await shhh(() => channel.reject(message, !discard));
       }
     }
   }
@@ -541,6 +548,7 @@ export class AMQPConnector
       queue,
       autoAck,
       cancelAt: Date.now() + (options.timeout || Infinity), // Important: do after pullChannel
+      discard: !!(options.pull && options.pull.discard),
       checkOptions: {
         type,
         correlationId: (options && options.pull) ? options.pull.correlationId : undefined,
@@ -632,7 +640,8 @@ export class AMQPConnector
       pull: {
         correlationId,
         exclusive: true,
-        passive: true,
+        passive: true, // do not use get
+        discard: true, // do not requeue invalid messages
         ...options.pull,
       },
       push: {

@@ -54,6 +54,14 @@ export class AMQPMockQueue {
   }
 
   ackMessage(message: amqp.Message, allUpTo?: boolean): amqp.Message {
+    // TODO: ack notify
+    if (allUpTo) this.pendings.clear();
+    else this.pendings.delete(message.fields.deliveryTag);
+    return message;
+  }
+
+  delMessage(message: amqp.Message, allUpTo?: boolean): amqp.Message {
+    // TODO: reject notify
     if (allUpTo) this.pendings.clear();
     else this.pendings.delete(message.fields.deliveryTag);
     return message;
@@ -388,11 +396,13 @@ implements AMQPDriverConfirmChannel {
 
   reject(message: amqp.Message, requeue?: boolean): void {
     this.wannaFail('reject');
+    const queue = this.connection
+      .getOrCreateQueue(message.fields.exchange, message.fields.routingKey);
     if (requeue) {
       message.fields.redelivered = true;
-      this.connection
-        .getOrCreateQueue(message.fields.exchange, message.fields.routingKey)
-        .addMessage(message);
+      queue.addMessage(message);
+    } else {
+      queue.delMessage(message);
     }
   }
 }
