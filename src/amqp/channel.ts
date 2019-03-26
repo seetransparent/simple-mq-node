@@ -2,7 +2,7 @@ import * as amqp from 'amqplib';
 
 import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
 import { AMQPDriverConfirmChannel, Omit } from './types';
-import { sleep, shhh, Timer } from '../utils';
+import { sleep, shhh, withRetries, Timer } from '../utils';
 import { PullError } from '../errors';
 
 import { alongErrors } from './utils';
@@ -68,13 +68,14 @@ export class AMQPConfirmChannel
       check: [],
       assert: {},
       inactivityTime: 3e5,
+      verbosity: 0,
+      ...options,
       queueFilter: {
         has: () => false,
         add: () => {},
         delete: () => {},
+        ...options.queueFilter,
       },
-      verbosity: 0,
-      ...options,
     };
   }
 
@@ -131,19 +132,15 @@ export class AMQPConfirmChannel
   protected async amqpChannel(options: ConnectOptions): Promise<AMQPDriverConfirmChannel> {
     const delay = options.delay || this.options.connectionDelay || 10;
     const retries = options.retries || this.options.connectionRetries || 10;
-    let lastError = new Error('No connection attempt has been made');
-    for (let retry = -1; retry < retries; retry += 1) {
-      try {
-        while (true) {
-          return await super.connect({ ...options, retries: 0 });
-        }
-      } catch (e) {
-        lastError = e;
-        if (!this.retryable(e, 'connect')) break;
-      }
-      await sleep(delay);
-    }
-    throw lastError;
+    return await withRetries(
+      () => super.connect({ ...options, retries: 0 }),
+      retries,
+      async (e) => {
+        if (!this.retryable(e, 'connect')) return false;
+        await sleep(delay);
+        return true;
+      },
+    );
   }
 
   /**
@@ -164,9 +161,10 @@ export class AMQPConfirmChannel
     const checkQueue = async (channel: AMQPDriverConfirmChannel, name: string) => {
       action = 'checkQueue';
       queue = name;
-      if (config.queueFilter && config.queueFilter.has(name)) return;
-      await alongErrors(channel, channel.checkQueue(name));
-      if (config.queueFilter) config.queueFilter.add(name);
+      if (!config.queueFilter.has(name)) {
+        await alongErrors(channel, channel.checkQueue(name));
+        config.queueFilter.add(name);
+      }
     };
     const assertQueue = async (
       channel: AMQPDriverConfirmChannel,
@@ -175,9 +173,10 @@ export class AMQPConfirmChannel
     ) => {
       action = 'assertQueue';
       queue = name;
-      if (config.queueFilter && config.queueFilter.has(name)) return;
-      await alongErrors(channel, channel.assertQueue(name, assertion));
-      if (config.queueFilter) config.queueFilter.add(name);
+      if (!config.queueFilter.has(name)) {
+        await alongErrors(channel, channel.assertQueue(name, assertion));
+        config.queueFilter.add(name);
+      }
     };
 
     try {
@@ -191,27 +190,22 @@ export class AMQPConfirmChannel
           continue;
         }
 
-        let queueError: Error | null | undefined;
-        for (let attempts = 10; attempts; attempts -= 1) {
-          try {
-            await checkQueue(channel, name);
-            queueError = null;
-            break;
-          } catch (e) {
-            queueError = e;
+        await withRetries(
+          async () => {
+            try {
+              return await checkQueue(channel, name);
+            } catch (e) {
+              channel = await reconnect(channel, e);
+              return await assertQueue(channel, name, assertion);
+            }
+          },
+          2,
+          async (e) => {
+            await sleep(100);
             channel = await reconnect(channel, e);
-          }
-          try {
-            await assertQueue(channel, name, assertion);
-            queueError = null;
-            break;
-          } catch (e) {
-            queueError = e;
-            channel = await reconnect(channel, e);
-          }
-          await sleep(1);
-        }
-        if (queueError) throw queueError;
+            return true;
+          },
+        );
       }
       return channel;
     } catch (e) {

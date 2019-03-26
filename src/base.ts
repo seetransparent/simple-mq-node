@@ -1,5 +1,5 @@
 import { AnyObject } from './types';
-import { Guard, PromiseAccumulator, withTimeout, withDomain, sleep } from './utils';
+import { Guard, PromiseAccumulator, withTimeout, withDomain, withRetries, sleep } from './utils';
 import { TimeoutError } from './errors';
 
 export interface ConnectOptions {
@@ -64,28 +64,20 @@ export class ConnectionManager<T> {
       () => withTimeout(
         async () => {
           if (this.connection) return this.connection;
-          let lastError = new Error('No connection attempt has been made');
-          for (let retry = -1; retry < retries; retry += 1) {
-            try {
-              const connection = await withDomain(connect);
-              if (timeouted) {
-                await disconnect(connection);
-                throw new TimeoutError('Timeout reached');
-              }
-              this.connection = connection;
-              return this.connection;
-            } catch (e) {
-              lastError = e;
-              if (e instanceof TimeoutError) break;
-            }
-            await sleep(delay);
-          }
-          throw lastError;
+          this.connection = await withRetries(
+            () => withDomain(connect),
+            retries,
+            async (e) => {
+              if (timeouted) throw new TimeoutError('Timeout reached');
+              if (e instanceof TimeoutError) return false;
+              await sleep(delay);
+              return true;
+            },
+          );
+          return this.connection;
         },
         timeout,
-        async () => {
-          timeouted = true;
-        },
+        () => { timeouted = true; },
       ),
     );
   }
