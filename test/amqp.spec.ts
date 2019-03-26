@@ -28,6 +28,16 @@ describe('amqp', () => {
         expect(channel.retryable(error)).toBeTruthy();
         expect(removal).toContain('myqueue');
       });
+      it('avoids connection checkQueue 404 error', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const channel = new lib.AMQPConfirmChannel({
+          connect: () => connection.createConfirmChannel(),
+          disconnect: c => c.close(),
+          check: ['myqueue'],
+        });
+        await expect(channel.connect()).rejects.toThrowError(/404\(NOT - FOUND\)/);
+        expect(connection.createdChannels).toBe(1);
+      });
       it('detects concurrency error', () => {
         const connection = new mock.AMQPMockConnection();
         const channel = new lib.AMQPConfirmChannel({
