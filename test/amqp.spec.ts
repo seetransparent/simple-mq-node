@@ -182,7 +182,7 @@ describe('amqp', () => {
         const connector = new lib.AMQPConnector({ name: 'test', connect: () => connection });
         try {
           connection.addMessage('', queue, Buffer.from('ok'));
-          const pending = connection.getQueue('', queue).pendings;
+          const { pending } = connection.getQueue('', queue);
           const channel = await connector.channel();
           expect(pending.size).toBe(0);
           const unacked = await connector.pull(queue, null, { channel, pull: { autoAck: false } });
@@ -206,13 +206,16 @@ describe('amqp', () => {
         connection.addMessage('', queue, Buffer.from('ok'), { type: 'patata' });
         connection.addMessage('', queue, Buffer.from('other'), { type: 'pataton' });
 
-        const options = { timeout: 10 };
+        const options = { timeout: 50 };
 
         const consoleWarn = console.warn;
         console.warn = jest.fn();
 
         await expect(connector.pull(queue, 'patatita', options))
           .rejects.toBeInstanceOf(errors.TimeoutError);
+
+        expect(console.warn).toHaveBeenCalled();
+        console.warn = consoleWarn;
 
         await expect(connector.pull(queue, 'patata', options))
           .resolves.toMatchObject({ content: Buffer.from('ok') });
@@ -221,9 +224,6 @@ describe('amqp', () => {
           .resolves.toMatchObject({ content: Buffer.from('other') });
 
         await connector.disconnect();
-
-        expect(console.warn).toHaveBeenCalled();
-        console.warn = consoleWarn;
       });
 
       it('honors correlationId filter and timeout', async () => {
@@ -391,7 +391,7 @@ describe('amqp', () => {
         await rpc('rpc-queue', 'patata');
         const queue = Object.keys(connection.queues).filter(x => /^response:/.test(x))[0];
         await connector.push(queue, 'spurious', Buffer.from('nooope'));
-        const result = await rpc('other-queue', 'patata');
+        const result = await rpc(queue, 'patata');
         expect(result.content.toString()).toBe('patata');
         expect(connection.queues[queue].messages).toHaveLength(0);
 

@@ -18,7 +18,7 @@ export class AMQPMockQueue {
     public options: amqp.Options.AssertQueue,
     public messages: amqp.Message[] = [],
     public consumers: AMQPMockConsumer[] = [],
-    public pendings: Set<number> = new Set(),
+    public pending: Set<number> = new Set(),
   ) { }
 
   process() {
@@ -42,7 +42,7 @@ export class AMQPMockQueue {
     else message.fields.messageCount = this.messages.length;
 
     // add to need-to-ack list
-    if (!options || !options.noAck) this.pendings.add(message.fields.deliveryTag);
+    if (!options || !options.noAck) this.pending.add(message.fields.deliveryTag);
 
     return message;
   }
@@ -50,20 +50,22 @@ export class AMQPMockQueue {
   addMessage(message: amqp.Message): amqp.Message {
     this.messages.push(message);
     process.nextTick(() => this.process());
+    const { deliveryTag } = (message.fields || {}) as amqp.ConsumeMessageFields;
+    this.pending.delete(deliveryTag);
     return message;
   }
 
   ackMessage(message: amqp.Message, allUpTo?: boolean): amqp.Message {
     // TODO: ack notify
-    if (allUpTo) this.pendings.clear();
-    else this.pendings.delete(message.fields.deliveryTag);
+    if (allUpTo) this.pending.clear();
+    else this.pending.delete(message.fields.deliveryTag);
     return message;
   }
 
   delMessage(message: amqp.Message, allUpTo?: boolean): amqp.Message {
     // TODO: reject notify
-    if (allUpTo) this.pendings.clear();
-    else this.pendings.delete(message.fields.deliveryTag);
+    if (allUpTo) this.pending.clear();
+    else this.pending.delete(message.fields.deliveryTag);
     return message;
   }
 

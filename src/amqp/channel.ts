@@ -2,7 +2,7 @@ import * as amqp from 'amqplib';
 
 import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
 import { AMQPDriverConfirmChannel, Omit } from './types';
-import { sleep, shhh } from '../utils';
+import { sleep, shhh, Timer } from '../utils';
 import { PullError } from '../errors';
 
 import { alongErrors } from './utils';
@@ -31,6 +31,7 @@ export interface AMQPConfirmChannelOptions
   connectionRetries?: number;
   connectionDelay?: number;
   queueFilter?: Filter;
+  verbosity?: number;
 }
 
 export interface AMQPConfirmChannelFullOptions
@@ -42,6 +43,7 @@ export interface AMQPConfirmChannelFullOptions
   };
   inactivityTime: number;
   queueFilter: Filter;
+  verbosity: number;
 }
 
 export class AMQPConfirmChannel
@@ -71,6 +73,7 @@ export class AMQPConfirmChannel
         add: () => {},
         delete: () => {},
       },
+      verbosity: 0,
       ...options,
     };
   }
@@ -204,7 +207,9 @@ export class AMQPConfirmChannel
       }
       return channel;
     } catch (e) {
-      console.log(`Operation connect resulted on error ${e}, disconnecting...`);
+      if (this.options.verbosity) {
+        console.warn(`Operation connect resulted on error ${e}, disconnecting...`);
+      }
       await shhh(() => this.disconnect(options));
       if (!this.retryable(e, 'connect')) throw e;
       return await this.connect(options);
@@ -224,13 +229,20 @@ export class AMQPConfirmChannel
     while (true) {
       const channel = await this.autoconnect(name);
       try {
-        const result = await alongErrors<T>(channel, channel[name].apply(channel, args));
+        const { result, elapsed } = await Timer.wrap(
+          () => alongErrors<T>(channel, channel[name].apply(channel, args)),
+        );
+        if (this.options.verbosity > 1) {
+          console.log(`Operation ${name} took ${Math.ceil(elapsed)}ms to complete`);
+        }
         if (resultBan && !result) {  // amqplib bug workaround
           await this.ban(channel, new Error(`Operation ${name} returned no result`));
         }
         return result;
       } catch (e) {
-        console.log(`Operation ${name} resulted on error ${e}, disconnecting...`);
+        if (this.options.verbosity) {
+          console.warn(`Operation ${name} resulted on error ${e}, disconnecting...`);
+        }
         await this.ban(channel, e); // errors break channel
         if (!this.retryable(e, name, queueAware ? args[0] : undefined)) throw e;
       }
@@ -245,20 +257,29 @@ export class AMQPConfirmChannel
   ): Promise<boolean> {
     while (true) {
       const channel = await this.autoconnect('publish');
-      const promise = new Promise<boolean>((resolve, reject) => {
-        try {
-          channel.publish(
-            exchange, routingKey, content, options,
-            (e: any) => e ? reject(e) : resolve(),
-          );
-        } catch (e) {
-          reject(e);
-        }
-      });
+      const operation = () => alongErrors(
+        channel,
+        new Promise<boolean>((resolve, reject) => {
+          try {
+            channel.publish(
+              exchange, routingKey, content, options,
+              (e: any) => e ? reject(e) : resolve(),
+            );
+          } catch (e) {
+            reject(e);
+          }
+        }),
+      );
       try {
-        return await alongErrors(channel, promise);
+        const { result, elapsed } = await Timer.wrap(operation);
+        if (this.options.verbosity > 1) {
+          console.log(`Operation publish took ${Math.ceil(elapsed)}ms to complete`);
+        }
+        return result;
       } catch (e) {
-        console.log(`Operation publish resulted on error ${e}, disconnecting...`);
+        if (this.options.verbosity) {
+          console.warn(`Operation publish resulted on error ${e}, disconnecting...`);
+        }
         await this.ban(channel, e);
         if (!this.retryable(e, 'publish', routingKey)) throw e;
       }
@@ -321,11 +342,20 @@ export class AMQPConfirmChannel
     }
     while (true) {
       const channel = await this.autoconnect('consume');
+      const operation = () => alongErrors(
+        channel,
+        new Promise<V>((resolve, reject) => consume(channel, resolve, reject)),
+      );
       try {
-        const promise = new Promise<V>((resolve, reject) => consume(channel, resolve, reject));
-        return await alongErrors(channel, promise);
+        const { result, elapsed } = await Timer.wrap(operation);
+        if (this.options.verbosity > 1) {
+          console.log(`Operation consume took ${Math.ceil(elapsed)}ms to complete`);
+        }
+        return result;
       } catch (e) {
-        console.log(`Operation consume resulted on error ${e}, disconnecting...`);
+        if (this.options.verbosity) {
+          console.warn(`Operation consume resulted on error ${e}, disconnecting...`);
+        }
         await this.ban(channel, e); // errors break channel
         if (!this.retryable(e, 'consume', queue)) throw e;
       }

@@ -24,8 +24,19 @@ export class Timer {
   protected toMs(hrtime: [number, number]): number {
     return hrtime[0] * 1e3 + hrtime[1] * 1e-6;
   }
+  get start(): number {
+    return this.toMs(this.hrstart);
+  }
   get elapsed(): number {
     return this.toMs(process.hrtime(this.hrstart));
+  }
+  static async wrap<T>(
+    fnc: () => Promise<T> | T,
+  ): Promise<{ result:T, start: number, elapsed: number }> {
+    const timer = new Timer();
+    const result = await fnc();
+    const elapsed = timer.elapsed;
+    return { result, elapsed, start: timer.start };
   }
 }
 

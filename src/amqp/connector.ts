@@ -21,6 +21,7 @@ export interface AMQPConnectorOptions {
   connect?: ConnectionManagerOptions<AMQPDriverConnection>['connect'];
   disconnect?: ConnectionManagerOptions<AMQPDriverConnection>['disconnect'];
   timeout?: number;
+  verbosity?: number;
   connectionRetries?: number;
   connectionDelay?: number;
   channelCacheSize?: number;
@@ -39,6 +40,7 @@ interface AMQPConnectorFullOptions
   exchange: string;
   uri: string;
   timeout: number;
+  verbosity: number;
   channelCacheSize: number;
   channelBanningAge: number;
   queueCacheSize: number;
@@ -47,7 +49,8 @@ interface AMQPConnectorFullOptions
   queuePoolAge: number;
 }
 
-interface CheckOptions extends Pick<amqp.MessageProperties, 'correlationId' | 'type'> { }
+interface CheckMessageOptions
+  extends Pick<amqp.MessageProperties, 'correlationId' | 'type'> { }
 
 interface QueueOptions {
   name: string;
@@ -56,7 +59,7 @@ interface QueueOptions {
   timeout?: number;
 }
 
-class DuplicatedMessage extends Error { }
+class QueueExhausted extends Error { }
 
 export interface AMQPOperationChannelOptions
   extends Omit<AMQPConfirmChannelOptions, 'connect' | 'disconnect'>
@@ -74,6 +77,17 @@ export interface AMQPOperationPushOptions extends AMQPOperationOptions {
   push?: amqp.Options.Publish;
 }
 
+interface AMQPPullSubOperationOptions extends AMQPOperationOptions {
+  channel: AMQPConfirmChannel;
+  timeout: number;
+  pull: amqp.Options.Consume & {
+    consumerTag: string,
+    autoAck: boolean,
+    discard: boolean,
+  };
+  checkOptions: CheckMessageOptions;
+}
+
 export interface AMQPOperationPullOptions extends AMQPOperationOptions {
   pull?: amqp.Options.Consume & {
     correlationId?: string,
@@ -82,6 +96,7 @@ export interface AMQPOperationPullOptions extends AMQPOperationOptions {
     discard?: boolean,
   };
 }
+
 export interface AMQPOperationRPCOptions
   extends AMQPOperationPushOptions, AMQPOperationPullOptions { }
 
@@ -135,6 +150,7 @@ export class AMQPConnector
       exchange: '',
       uri: 'amqp://localhost',
       timeout: 5000,
+      verbosity: 1,
       connectionRetries: 10,
       connectionDelay: 1000,
       channelCacheSize: 100,
@@ -290,7 +306,7 @@ export class AMQPConnector
 
   protected checkMessage(
     message: amqp.Message,
-    options: Pick<amqp.MessageProperties, 'correlationId' | 'type'>,
+    options: CheckMessageOptions,
   ): boolean {
     const { correlationId, type } = options;
     return (
@@ -299,95 +315,62 @@ export class AMQPConnector
     );
   }
 
-  protected async getMessage({
-    channel, queue, autoAck, cancelAt, discard, getOptions, checkOptions,
-  }: {
-    channel: AMQPConfirmChannel;
-    queue: string;
-    autoAck: boolean;
-    cancelAt: number;
-    discard: boolean;
-    getOptions: amqp.Options.Get;
-    checkOptions: CheckOptions;
-  }): Promise<amqp.GetMessage | null> {
+  protected async pullGet(
+    queue: string,
+    options: AMQPPullSubOperationOptions,
+  ): Promise<amqp.GetMessage | null> {
     const received = new Set();
+    const cancelAt = Date.now() + options.timeout;
     for (
       let message: amqp.GetMessage | false;
-      message = await channel.get(queue, getOptions);
+      message = await options.channel.get(queue, { noAck: options.pull.noAck });
     ) {
-      if (this.checkMessage(message, checkOptions)) {
-        if (autoAck) await channel.ack(message);
+      if (this.checkMessage(message, options.checkOptions)) {
+        if (options.pull.autoAck) await options.channel.ack(message);
         return message;
       }
-
-      await channel.reject(message, !discard); // requeue
-
+      await options.channel.reject(message, !options.pull.discard); // requeue
       if (Date.now() > cancelAt) {
-        throw new TimeoutError(`Timeout reached at ${cancelAt}`);
+        throw new TimeoutError(`Timeout after ${Math.round(options.timeout)}ms`);
       }
-
       if (received.has(message.properties.messageId)) {
-        throw new DuplicatedMessage(
+        throw new QueueExhausted(
           `Unwanted message ${message.properties.messageId}`
           + (message.properties.type ? ` (${message.properties.type})` : '')
-          + ` found twice on ${queue}`,
+          + ` received twice from ${queue}`,
         );
       }
-
       received.add(message.properties.messageId);
     }
     return null;
   }
 
-  protected async consumeOnce({
-    channel, queue, autoAck, cancelAt, discard, consumeOptions, checkOptions,
-  }: {
-    channel: AMQPConfirmChannel;
-    queue: string;
-    autoAck: boolean;
-    cancelAt: number;
-    discard: boolean,
-    consumeOptions: amqp.Options.Consume & { consumerTag: string };
-    checkOptions: CheckOptions;
-  }): Promise<amqp.ConsumeMessage> {
-    const checkMessage = this.checkMessage.bind(this);
-    const received = new Set();
-    const unwanted: amqp.ConsumeMessage[] = [];
-
-    function handler(
-      message: amqp.Message,
-      callback: (e?: Error | null, v?: amqp.ConsumeMessage) => void,
-    ): void {
-      if (received.has(message.properties.messageId)) {
-        unwanted.push(message);
-        callback(
-          new DuplicatedMessage(
-            `Unwanted message ${message.properties.messageId}`
-            + (message.properties.type ? ` (${message.properties.type})` : '')
-            + ` found twice on ${queue}`,
-          ),
-        );
-      } else {
-        received.add(message.properties.messageId);
-        if (checkMessage(message, checkOptions)) callback(null, message);
-        else unwanted.push(message);
-      }
-    }
-
+  protected async pullConsume(
+    queue: string,
+    options: AMQPPullSubOperationOptions,
+  ): Promise<amqp.ConsumeMessage> {
+    const unwanted = new Set<amqp.ConsumeMessage>();
+    const consume = () => options.channel.consume<amqp.ConsumeMessage>(
+      queue,
+      (message, callback) => {
+        if (this.checkMessage(message, options.checkOptions)) callback(null, message);
+        else unwanted.add(message);
+      },
+      omit(options.pull, ['autoAck', 'discard']),
+    );
     let result: amqp.ConsumeMessage | undefined;
     try {
-      const consume = () => channel.consume<amqp.ConsumeMessage>(queue, handler, consumeOptions);
-      result = Number.isFinite(cancelAt)
-        ? await withTimeout(consume, cancelAt - Date.now())
+      result = Number.isFinite(options.timeout)
+        ? await withTimeout(consume, options.timeout)
         : await consume();
-      if (autoAck) await channel.ack(result);
+      if (options.pull.autoAck) await options.channel.ack(result);
       return result;
     } catch (e) {
-      if (result) unwanted.push(result);
+      if (result) unwanted.add(result);
       throw e;
     } finally {
-      for (const message of unwanted) {
-        await shhh(() => channel.reject(message, !discard));
+      for (const message of unwanted.keys()) {
+        await shhh(() => options.channel.reject(message, !options.pull.discard));
       }
     }
   }
@@ -433,6 +416,7 @@ export class AMQPConnector
     const channelId = this.genId('channelId');
     const confirmChannel = new AMQPConfirmChannel({
       channelId,
+      verbosity: this.options.verbosity,
       queueFilter: {
         add: name => this.knownQueues.set(name, true),
         has: name => !!this.knownQueues.get(name),
@@ -532,72 +516,60 @@ export class AMQPConnector
     options: AMQPOperationPullOptions = {},
   ): Promise<amqp.Message> {
     const passive = options.pull && options.pull.passive;
-    const consumerTag = this.consumerTag(type, options);
-    const autoAck = !options.pull || options.pull.autoAck !== false; // default to true
     const channel = options.channel || await this.channel({
       assert: {
-        // ensure queue is available
-        [queue]: {
-          conflict: 'ignore',
-          durable: true,
-        },
+        // just ensure queue is available
+        [queue]: { conflict: 'ignore' },
       },
       prefetch: 1,
     });
-    const commonOptions = {
+    const timer = new Timer();
+    const timeout = options.timeout || Infinity;
+    const opts = {
+      ...options,
+      timeout,
       channel,
-      queue,
-      autoAck,
-      cancelAt: Date.now() + (options.timeout || Infinity), // Important: do after pullChannel
-      discard: !!(options.pull && options.pull.discard),
       checkOptions: {
         type,
-        correlationId: (options && options.pull) ? options.pull.correlationId : undefined,
+        correlationId: options.pull ? options.pull.correlationId : undefined,
+      },
+      pull: {
+        discard: false,
+        ...options.pull,
+        autoAck: !options.pull || options.pull.autoAck !== false, // default to true
+        consumerTag: this.consumerTag(type, options),
       },
     };
-    try {
-      return (
-        (
-          passive
-          ? null
-          : await this.getMessage({
-            ...commonOptions,
-            getOptions: {
-              noAck: options.pull ? options.pull.noAck : false,
-            },
-          }).catch(async (e) => {
-            if (e instanceof DuplicatedMessage) return console.warn(e);
-            throw e;
-          })
-        )
-        || await this.consumeOnce({
-          ...commonOptions,
-          consumeOptions: {
-            consumerTag,
-            ...omit(options.pull, ['correlationId', 'autoAck']),
-          },
-        }).catch(async (e) => {
-          if (e instanceof DuplicatedMessage) return console.warn(e);
-          throw e;
-        })
-        || await (async () => {
-          const timeout = commonOptions.cancelAt - Date.now();
-          if (Number.isFinite(timeout) && timeout > 1) { // do not retry without timeout
-            const delay = timeout > 20 ? timeout / 2 : 0;
-            if (delay) await sleep(delay);
-            return await this.pull(queue, type, { ...options, timeout: timeout - delay });
-          }
-          throw new TimeoutError(`Timeout at ${commonOptions.cancelAt}`);
-        })()
-      );
-    } catch (e) {
-      if (e instanceof TimeoutError) {
-        throw new TimeoutError(`Timeout after ${options.timeout}ms`);
+    const steps = [
+      async () => passive ? null : await this.pullGet(queue, opts),
+      async () => await this.pullConsume(queue, opts),
+      async () => {
+        if (Number.isFinite(timeout)) {
+          const remaining = timeout - timer.elapsed;
+          await sleep(remaining > 20 ? Math.max(1000, remaining / 2) : 0);
+          return null;
+        }
+        throw new TimeoutError('No retry because no timeout given');
+      },
+      async () => await this.pull(queue, type, { ...options, timeout: opts.timeout }),
+    ];
+
+    for (const step of steps) {
+      try {
+        opts.timeout = timeout - timer.elapsed;
+        if (opts.timeout < 2) break;
+        const result = await step();
+        if (result) return result;
+      } catch (e) {
+        if (e instanceof TimeoutError) break;
+        if (e instanceof QueueExhausted) {
+          if (this.options.verbosity) console.warn(e);
+          continue;
+        }
+        throw e;
       }
-      throw e;
-    } finally {
-      if (!options.channel) await channel.disconnect();
     }
+    throw new TimeoutError(`Timeout after ${Math.round(timer.elapsed)}ms`);
   }
 
   /**
@@ -647,22 +619,17 @@ export class AMQPConnector
       },
     };
     try {
-      const timer = new Timer();
-      console.log('push');
-      await this.push(queue, type, content, commonOptions);
+      const { elapsed } = await Timer.wrap(() => this.push(queue, type, content, commonOptions));
       if (!commonOptions.timeout) { // only with replyTo
-        console.log('pull no timeout');
         return await this.pull(responseQueue.name, null, commonOptions);
       }
       const pullOptions = {
         ...commonOptions,
-        timeout: Math.max(0, Math.ceil(commonOptions.timeout - timer.elapsed)),
+        timeout: Math.max(0, Math.ceil(commonOptions.timeout - elapsed)),
       };
       if (pullOptions.timeout) {
-        console.log('pull timeout', pullOptions.timeout);
         return await this.pull(responseQueue.name, null, pullOptions);
       }
-      console.log(commonOptions.timeout, pullOptions.timeout);
       throw new TimeoutError(`Timeout after ${commonOptions.timeout}ms`);
     } finally {
       await this.pushQueue(responseQueue, commonOptions.channel);
