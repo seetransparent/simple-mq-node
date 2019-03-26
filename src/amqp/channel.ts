@@ -89,7 +89,7 @@ export class AMQPConfirmChannel
       return true;
     }
 
-    if (e.message.indexOf('NOT_FOUND - no queue') > -1) {
+    if (operation !== 'checkQueue' && e.message.indexOf('NOT_FOUND - no queue') > -1) {
       const match = /- no queue '([^']+|\\.)+'/.exec(e.message);
       const equeue = match ? match[1] : null;
       if (equeue) {
@@ -151,13 +151,19 @@ export class AMQPConfirmChannel
    */
   async connect(options: ConnectOptions = {}): Promise<AMQPDriverConfirmChannel> {
     const config = this.options;
+    let action: string | undefined;
+    let queue: string | undefined;
     const reconnect = async (oldChannel?: AMQPDriverConfirmChannel, error?: Error) => {
+      action = 'connect';
+      queue = undefined;
       if (oldChannel) await this.ban(oldChannel, error);
       const channel = await this.amqpChannel(options);
       if (config.prefetch) await alongErrors(channel, channel.prefetch(config.prefetch));
       return channel;
     };
     const checkQueue = async (channel: AMQPDriverConfirmChannel, name: string) => {
+      action = 'checkQueue';
+      queue = name;
       if (config.queueFilter && config.queueFilter.has(name)) return;
       await alongErrors(channel, channel.checkQueue(name));
       if (config.queueFilter) config.queueFilter.add(name);
@@ -167,6 +173,8 @@ export class AMQPConfirmChannel
       name: string,
       assertion?: amqp.Options.AssertQueue,
     ) => {
+      action = 'assertQueue';
+      queue = name;
       if (config.queueFilter && config.queueFilter.has(name)) return;
       await alongErrors(channel, channel.assertQueue(name, assertion));
       if (config.queueFilter) config.queueFilter.add(name);
@@ -211,8 +219,8 @@ export class AMQPConfirmChannel
         console.warn(`Operation connect resulted on error ${e}, disconnecting...`);
       }
       await shhh(() => this.disconnect(options));
-      if (!this.retryable(e, 'connect')) throw e;
-      return await this.connect(options);
+      if (this.retryable(e, action, queue)) return await this.connect(options);
+      throw e;
     }
   }
 

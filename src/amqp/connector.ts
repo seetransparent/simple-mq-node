@@ -419,7 +419,7 @@ export class AMQPConnector
       verbosity: this.options.verbosity,
       queueFilter: {
         add: name => this.knownQueues.set(name, true),
-        has: name => !!this.knownQueues.get(name),
+        has: name => !!this.knownQueues.get(name), // using get to update freshness
         delete: name => this.knownQueues.del(name),
       },
       connect: async () => {
