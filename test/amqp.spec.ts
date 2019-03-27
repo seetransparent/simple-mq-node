@@ -28,6 +28,16 @@ describe('amqp', () => {
         expect(channel.retryable(error)).toBeTruthy();
         expect(removal).toContain('myqueue');
       });
+      it('avoids connection checkQueue 404 error', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const channel = new lib.AMQPConfirmChannel({
+          connect: () => connection.createConfirmChannel(),
+          disconnect: c => c.close(),
+          check: ['myqueue'],
+        });
+        await expect(channel.connect()).rejects.toThrowError(/404\(NOT - FOUND\)/);
+        expect(connection.createdChannels).toBe(1);
+      });
       it('detects concurrency error', () => {
         const connection = new mock.AMQPMockConnection();
         const channel = new lib.AMQPConfirmChannel({
@@ -182,7 +192,7 @@ describe('amqp', () => {
         const connector = new lib.AMQPConnector({ name: 'test', connect: () => connection });
         try {
           connection.addMessage('', queue, Buffer.from('ok'));
-          const pending = connection.getQueue('', queue).pendings;
+          const { pending } = connection.getQueue('', queue);
           const channel = await connector.channel();
           expect(pending.size).toBe(0);
           const unacked = await connector.pull(queue, null, { channel, pull: { autoAck: false } });
@@ -206,13 +216,16 @@ describe('amqp', () => {
         connection.addMessage('', queue, Buffer.from('ok'), { type: 'patata' });
         connection.addMessage('', queue, Buffer.from('other'), { type: 'pataton' });
 
-        const options = { timeout: 10 };
+        const options = { timeout: 50 };
 
         const consoleWarn = console.warn;
         console.warn = jest.fn();
 
         await expect(connector.pull(queue, 'patatita', options))
           .rejects.toBeInstanceOf(errors.TimeoutError);
+
+        expect(console.warn).toHaveBeenCalled();
+        console.warn = consoleWarn;
 
         await expect(connector.pull(queue, 'patata', options))
           .resolves.toMatchObject({ content: Buffer.from('ok') });
@@ -221,9 +234,6 @@ describe('amqp', () => {
           .resolves.toMatchObject({ content: Buffer.from('other') });
 
         await connector.disconnect();
-
-        expect(console.warn).toHaveBeenCalled();
-        console.warn = consoleWarn;
       });
 
       it('honors correlationId filter and timeout', async () => {
@@ -342,6 +352,64 @@ describe('amqp', () => {
         } finally {
           await connector.disconnect();
         }
+      });
+
+      it('reuses response queues', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connect: () => connection,
+        });
+        const rpc = async (queue: string, message: string) => {
+          const publisher = connector.rpc(queue, 'correct', Buffer.from(message));
+          await connector.consume(queue, null, (message) => {
+            return {
+              break: true,
+              content: message.content,
+            };
+          });
+          return await publisher;
+        };
+        await rpc('rpc-queue', 'patata');
+        await rpc('other-queue', 'patata');
+        await rpc('another-queue', 'patata');
+
+        // 3 publish, 1 response
+        expect(connection.removedQueues).toBe(0);
+        expect(connection.createdQueues).toBe(4);
+
+        await connector.disconnect();
+        expect(connection.removedQueues).toBe(1);
+      });
+
+      it('discard invalid messages on response queues', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connect: () => connection,
+        });
+        const rpc = async (queue: string, message: string) => {
+          const publisher = connector.rpc(queue, 'correct', Buffer.from(message));
+          await connector.consume(queue, null, (message) => {
+            return {
+              break: true,
+              content: message.content,
+            };
+          });
+          return await publisher;
+        };
+        await rpc('rpc-queue', 'patata');
+        const queue = Object.keys(connection.queues).filter(x => /^response:/.test(x))[0];
+        await connector.push(queue, 'spurious', Buffer.from('nooope'));
+        const result = await rpc(queue, 'patata');
+        expect(result.content.toString()).toBe('patata');
+        expect(connection.queues[queue].messages).toHaveLength(0);
+
+        // 3 publish, 1 response
+        expect(connection.removedQueues).toBe(0);
+        expect(connection.createdQueues).toBe(3);
+
+        await connector.disconnect();
       });
     });
 

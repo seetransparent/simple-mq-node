@@ -6,7 +6,7 @@ import { MessageQueueConnector, ResultMessage } from '../types';
 import { ConnectionManager, ConnectionManagerOptions, ConnectOptions } from '../base';
 import { TimeoutError } from '../errors';
 import {
-  omit, withTimeout, sleep, shhh,
+  omit, withTimeout, sleep, shhh, Timer,
   attachNamedListener, removeNamedListener,
 } from '../utils';
 
@@ -21,12 +21,15 @@ export interface AMQPConnectorOptions {
   connect?: ConnectionManagerOptions<AMQPDriverConnection>['connect'];
   disconnect?: ConnectionManagerOptions<AMQPDriverConnection>['disconnect'];
   timeout?: number;
+  verbosity?: number;
   connectionRetries?: number;
   connectionDelay?: number;
   channelCacheSize?: number;
   channelBanningAge?: number;
   queueCacheSize?: number;
   queueCacheAge?: number;
+  queuePoolSize?: number;
+  queuePoolAge?: number;
 }
 
 interface AMQPConnectorFullOptions
@@ -37,15 +40,26 @@ interface AMQPConnectorFullOptions
   exchange: string;
   uri: string;
   timeout: number;
+  verbosity: number;
   channelCacheSize: number;
   channelBanningAge: number;
   queueCacheSize: number;
   queueCacheAge: number;
+  queuePoolSize: number;
+  queuePoolAge: number;
 }
 
-interface CheckOptions extends Pick<amqp.MessageProperties, 'correlationId' | 'type'> { }
+interface CheckMessageOptions
+  extends Pick<amqp.MessageProperties, 'correlationId' | 'type'> { }
 
-class DuplicatedMessage extends Error { }
+interface QueueOptions {
+  name: string;
+  assert: AMQPConfirmChannelOptions['assert'];
+  cacheable: boolean;
+  timeout?: number;
+}
+
+class QueueExhausted extends Error { }
 
 export interface AMQPOperationChannelOptions
   extends Omit<AMQPConfirmChannelOptions, 'connect' | 'disconnect'>
@@ -63,9 +77,26 @@ export interface AMQPOperationPushOptions extends AMQPOperationOptions {
   push?: amqp.Options.Publish;
 }
 
-export interface AMQPOperationPullOptions extends AMQPOperationOptions {
-  pull?: { correlationId?: string, autoAck?: boolean } & amqp.Options.Consume;
+interface AMQPPullSubOperationOptions extends AMQPOperationOptions {
+  channel: AMQPConfirmChannel;
+  timeout: number;
+  pull: amqp.Options.Consume & {
+    consumerTag: string,
+    autoAck: boolean,
+    discard: boolean,
+  };
+  checkOptions: CheckMessageOptions;
 }
+
+export interface AMQPOperationPullOptions extends AMQPOperationOptions {
+  pull?: amqp.Options.Consume & {
+    correlationId?: string,
+    autoAck?: boolean,
+    passive?: boolean,
+    discard?: boolean,
+  };
+}
+
 export interface AMQPOperationRPCOptions
   extends AMQPOperationPushOptions, AMQPOperationPullOptions { }
 
@@ -94,6 +125,8 @@ export class AMQPConnector
   protected channelCache: AMQPDriverConfirmChannel[];
   protected bannedChannels: LRUCache.Cache<string, AMQPDriverConfirmChannel>;
   protected knownQueues: LRUCache.Cache<string, boolean>;
+  protected queuePool: string[];
+  protected queuePoolCache: LRUCache.Cache<string, boolean>;
   protected cleanupInterval: NodeJS.Timer;
 
   constructor(options: AMQPConnectorOptions) {
@@ -120,12 +153,15 @@ export class AMQPConnector
       exchange: '',
       uri: 'amqp://localhost',
       timeout: 5000,
+      verbosity: 1,
       connectionRetries: 10,
       connectionDelay: 1000,
       channelCacheSize: 100,
       channelBanningAge: 2000,
       queueCacheSize: 1000,
       queueCacheAge: 10000,
+      queuePoolSize: 10000,
+      queuePoolAge: 3600000,  // 1h
       ...options,
     };
     super({
@@ -145,25 +181,46 @@ export class AMQPConnector
       max: opts.queueCacheSize,
       maxAge: opts.queueCacheAge,
     });
+    this.queuePool = [];
+    this.queuePoolCache = new LRUCache({
+      max: opts.queuePoolSize,
+      dispose: (queue) => {
+        const index = this.queuePool.indexOf(queue);
+        if (index > -1) {
+          this.queuePool.splice(index, 1);
+          this.connectionPromises.unconditionally(this.dispose(queue));
+        }
+      },
+      noDisposeOnSet: true,
+    });
     this.bannedChannels = new LRUCache({
       max: opts.channelCacheSize,
       maxAge: opts.channelBanningAge,
       dispose: (key, channel) => this.connectionPromises.push(shhh(() => channel.close())),
+      noDisposeOnSet: true,
     });
 
   }
 
   async disconnect(options: ConnectOptions = {}): Promise<void> {
-    clearInterval(this.cleanupInterval);
-    this.channelCache.splice(0, this.channelCache.length);
-    this.bannedChannels.reset();
+    clearInterval(this.cleanupInterval); // stop garbage collector
+    // remove queue caches
+    this.queuePoolCache.reset();
     this.knownQueues.reset();
+    await this.connectionPromises; // required because of queuePoolCache
+    // remove channel caches
+    this.bannedChannels.reset();
+    this.channelCache.splice(0, this.channelCache.length);
     return await super.disconnect(options);
   }
 
   async connect(options: ConnectOptions = {}): Promise<AMQPDriverConnection> {
+    // setup garbage collector
     this.cleanupInterval = setInterval(
-      () => this.bannedChannels.prune(),
+      () => {
+        this.bannedChannels.prune();
+        this.queuePoolCache.prune();
+      },
       this.options.channelBanningAge,
     );
     return await super.connect(options);
@@ -200,20 +257,59 @@ export class AMQPConnector
     return this.genId('consumer', type);
   }
 
-  protected responseQueue(type?: string | null, options?: AMQPOperationRPCOptions): string {
-    if (options && options.push && options.push.replyTo) {
-      return options.push.replyTo;
+  protected pullQueue(type?: string | null, options: AMQPOperationRPCOptions = {}): QueueOptions {
+    if (options.push && options.push.replyTo) {
+      const name = options.push.replyTo;
+      return {
+        name,
+        assert: {
+          [name]: {
+            conflict: 'ignore',
+          },
+        },
+        cacheable: false,
+        timeout: options.timeout,
+      };
     }
-    let queue: string;
-    do {
-      queue = this.genId('response', type);
-    } while (this.knownQueues.has(queue));
-    return queue;
+    if (options.channel) {
+      throw new Error('Option push.replyTo is mandatory when RPC channels are given');
+    }
+    let name: string | undefined = this.queuePool.shift();
+    if (name) {
+      this.queuePoolCache.del(name); // after shift, so no discard
+    } else {
+      do {
+        name = this.genId('response', type);
+      } while (this.knownQueues.has(name));
+    }
+    return {
+      name,
+      assert: {
+        [name]: {
+          conflict: 'ignore',
+          exclusive: true,
+          durable: true,
+          arguments: {
+            messageTtl: this.options.queuePoolAge,
+            expires: this.options.queuePoolAge,
+          },
+        },
+      },
+      cacheable: true,
+      timeout: Math.min(options.timeout || Infinity, this.options.queuePoolAge),
+    };
+  }
+
+  protected async pushQueue(options: QueueOptions, channel: AMQPConfirmChannel) {
+    if (options.cacheable) {
+      this.queuePool.push(options.name);
+      this.queuePoolCache.set(options.name, true);
+    }
   }
 
   protected checkMessage(
     message: amqp.Message,
-    options: Pick<amqp.MessageProperties, 'correlationId' | 'type'>,
+    options: CheckMessageOptions,
   ): boolean {
     const { correlationId, type } = options;
     return (
@@ -222,93 +318,62 @@ export class AMQPConnector
     );
   }
 
-  protected async getMessage({
-    channel, queue, autoAck, cancelAt, getOptions, checkOptions,
-  }: {
-    channel: AMQPConfirmChannel;
-    queue: string;
-    autoAck: boolean;
-    cancelAt: number;
-    getOptions: amqp.Options.Get;
-    checkOptions: CheckOptions;
-  }): Promise<amqp.GetMessage | null> {
+  protected async pullGet(
+    queue: string,
+    options: AMQPPullSubOperationOptions,
+  ): Promise<amqp.GetMessage | null> {
     const received = new Set();
+    const cancelAt = Date.now() + options.timeout;
     for (
       let message: amqp.GetMessage | false;
-      message = await channel.get(queue, getOptions);
+      message = await options.channel.get(queue, { noAck: options.pull.noAck });
     ) {
-      if (this.checkMessage(message, checkOptions)) {
-        if (autoAck) await channel.ack(message);
+      if (this.checkMessage(message, options.checkOptions)) {
+        if (options.pull.autoAck) await options.channel.ack(message);
         return message;
       }
-
-      await channel.reject(message, true); // requeue
-
+      await options.channel.reject(message, !options.pull.discard); // requeue
       if (Date.now() > cancelAt) {
-        throw new TimeoutError(`Timeout reached at ${cancelAt}`);
+        throw new TimeoutError(`Timeout after ${Math.round(options.timeout)}ms`);
       }
-
       if (received.has(message.properties.messageId)) {
-        throw new DuplicatedMessage(
+        throw new QueueExhausted(
           `Unwanted message ${message.properties.messageId}`
           + (message.properties.type ? ` (${message.properties.type})` : '')
-          + ` found twice on ${queue}`,
+          + ` received twice from ${queue}`,
         );
       }
-
       received.add(message.properties.messageId);
     }
     return null;
   }
 
-  protected async consumeOnce({
-    channel, queue, autoAck, cancelAt, consumeOptions, checkOptions,
-  }: {
-    channel: AMQPConfirmChannel;
-    queue: string;
-    autoAck: boolean;
-    cancelAt: number;
-    consumeOptions: amqp.Options.Consume & { consumerTag: string };
-    checkOptions: CheckOptions;
-  }): Promise<amqp.ConsumeMessage> {
-    const checkMessage = this.checkMessage.bind(this);
-    const received = new Set();
-    const unwanted: amqp.ConsumeMessage[] = [];
-
-    function handler(
-      message: amqp.Message,
-      callback: (e?: Error | null, v?: amqp.ConsumeMessage) => void,
-    ): void {
-      if (received.has(message.properties.messageId)) {
-        unwanted.push(message);
-        callback(
-          new DuplicatedMessage(
-            `Unwanted message ${message.properties.messageId}`
-            + (message.properties.type ? ` (${message.properties.type})` : '')
-            + ` found twice on ${queue}`,
-          ),
-        );
-      } else {
-        received.add(message.properties.messageId);
-        if (checkMessage(message, checkOptions)) callback(null, message);
-        else unwanted.push(message);
-      }
-    }
-
+  protected async pullConsume(
+    queue: string,
+    options: AMQPPullSubOperationOptions,
+  ): Promise<amqp.ConsumeMessage> {
+    const unwanted = new Set<amqp.ConsumeMessage>();
+    const consume = () => options.channel.consume<amqp.ConsumeMessage>(
+      queue,
+      (message, callback) => {
+        if (this.checkMessage(message, options.checkOptions)) callback(null, message);
+        else unwanted.add(message);
+      },
+      omit(options.pull, ['autoAck', 'discard']),
+    );
     let result: amqp.ConsumeMessage | undefined;
     try {
-      const consume = () => channel.consume<amqp.ConsumeMessage>(queue, handler, consumeOptions);
-      result = Number.isFinite(cancelAt)
-        ? await withTimeout(consume, cancelAt - Date.now())
+      result = Number.isFinite(options.timeout)
+        ? await withTimeout(consume, options.timeout)
         : await consume();
-      if (autoAck) await channel.ack(result);
+      if (options.pull.autoAck) await options.channel.ack(result);
       return result;
     } catch (e) {
-      if (result) unwanted.push(result);
+      if (result) unwanted.add(result);
       throw e;
     } finally {
-      for (const message of unwanted) {
-        await shhh(() => channel.reject(message, true));
+      for (const message of unwanted.keys()) {
+        await shhh(() => options.channel.reject(message, !options.pull.discard));
       }
     }
   }
@@ -318,32 +383,22 @@ export class AMQPConnector
    */
   async ping(): Promise<void> {
     const type = 'ping';
-    const queue = this.responseQueue(type);
-    const channel = await this.channel({
-      assert: {
-        [queue]: {
-          exclusive: true,
-          durable: false,
-          autoDelete: true,
-        },
-      },
-    });
+    const queue = this.pullQueue(type);
+    const channel = await this.channel({ assert: queue.assert });
     const rpcOptions = {
       channel,
       timeout: this.options.timeout,
-      push: {
-        replyTo: queue,
-      },
+      push: { replyTo: queue.name },
     };
     try {
-      const message = await this.rpc(queue, type, new Buffer('ok'), rpcOptions);
+      const message = await this.rpc(queue.name, type, new Buffer('ok'), rpcOptions);
       if (!message) {
         throw new Error('AMQP message not received on time');
       } else if (message.content.toString('utf-8') !== 'ok') {
         throw new Error('AMQP message corrupted');
       }
     } finally {
-      await this.dispose(queue, { channel });
+      await this.pushQueue(queue, channel);
       await channel.disconnect();
     }
   }
@@ -364,9 +419,10 @@ export class AMQPConnector
     const channelId = this.genId('channelId');
     const confirmChannel = new AMQPConfirmChannel({
       channelId,
+      verbosity: this.options.verbosity,
       queueFilter: {
         add: name => this.knownQueues.set(name, true),
-        has: name => !!this.knownQueues.get(name),
+        has: name => !!this.knownQueues.get(name), // using get to update freshness
         delete: name => this.knownQueues.del(name),
       },
       connect: async () => {
@@ -462,68 +518,61 @@ export class AMQPConnector
     type?: string | null,
     options: AMQPOperationPullOptions = {},
   ): Promise<amqp.Message> {
-    const consumerTag = this.consumerTag(type, options);
-    const autoAck = !options.pull || options.pull.autoAck !== false; // default to true
+    const passive = options.pull && options.pull.passive;
     const channel = options.channel || await this.channel({
       assert: {
-        // ensure queue is available
-        [queue]: {
-          conflict: 'ignore',
-          durable: true,
-        },
+        // just ensure queue is available
+        [queue]: { conflict: 'ignore' },
       },
       prefetch: 1,
     });
-    const commonOptions = {
+    const timer = new Timer();
+    const timeout = options.timeout || Infinity;
+    const opts = {
+      ...options,
+      timeout,
       channel,
-      queue,
-      autoAck,
-      cancelAt: Date.now() + (options.timeout || Infinity), // Important: do after pullChannel
       checkOptions: {
         type,
-        correlationId: (options && options.pull) ? options.pull.correlationId : undefined,
+        correlationId: options.pull ? options.pull.correlationId : undefined,
+      },
+      pull: {
+        discard: false,
+        ...options.pull,
+        autoAck: !options.pull || options.pull.autoAck !== false, // default to true
+        consumerTag: this.consumerTag(type, options),
       },
     };
+    const steps = [
+      async () => passive ? null : await this.pullGet(queue, opts),
+      async () => await this.pullConsume(queue, opts),
+      async () => {
+        if (Number.isFinite(timeout)) {
+          const remaining = timeout - timer.elapsed;
+          await sleep(remaining > 20 ? Math.max(1000, remaining / 2) : 0);
+          return null;
+        }
+        throw new TimeoutError('No retry because no timeout given');
+      },
+      async () => await this.pull(queue, type, { ...options, timeout: opts.timeout }),
+    ];
 
-    try {
-      return (
-        await this.getMessage({
-          ...commonOptions,
-          getOptions: {
-            noAck: options.pull ? options.pull.noAck : false,
-          },
-        }).catch(async (e) => {
-          if (e instanceof DuplicatedMessage) return console.warn(e);
-          throw e;
-        })
-        || await this.consumeOnce({
-          ...commonOptions,
-          consumeOptions: {
-            consumerTag,
-            ...omit(options.pull, ['correlationId', 'autoAck']),
-          },
-        }).catch(async (e) => {
-          if (e instanceof DuplicatedMessage) return console.warn(e);
-          throw e;
-        })
-        || await (async () => {
-          const timeout = commonOptions.cancelAt - Date.now();
-          if (Number.isFinite(timeout) && timeout > 1) { // do not retry without timeout
-            const delay = timeout > 20 ? timeout / 2 : 0;
-            if (delay) await sleep(delay);
-            return await this.pull(queue, type, { ...options, timeout: timeout - delay });
-          }
-          throw new TimeoutError(`Timeout at ${commonOptions.cancelAt}`);
-        })()
-      );
-    } catch (e) {
-      if (e instanceof TimeoutError) {
-        throw new TimeoutError(`Timeout after ${options.timeout}ms`);
+    for (const step of steps) {
+      try {
+        opts.timeout = timeout - timer.elapsed;
+        if (opts.timeout < 2) break;
+        const result = await step();
+        if (result) return result;
+      } catch (e) {
+        if (e instanceof TimeoutError) break;
+        if (e instanceof QueueExhausted) {
+          if (this.options.verbosity) console.warn(e);
+          continue;
+        }
+        throw e;
       }
-      throw e;
-    } finally {
-      if (!options.channel) await channel.disconnect();
     }
+    throw new TimeoutError(`Timeout after ${Math.round(timer.elapsed)}ms`);
   }
 
   /**
@@ -541,27 +590,14 @@ export class AMQPConnector
     options: AMQPOperationRPCOptions = {},
   ): Promise<amqp.Message> {
     const correlationId = this.correlationId(type, options);
-    const responseQueue = this.responseQueue(type, options);
-    const timeout = Number.isFinite(options.timeout as number)
-      ? options.timeout as number
-      : 3600000;  // 1h
-
+    const responseQueue = this.pullQueue(type, options);
     const commonOptions = {
       // Custom channel config for pull
       // Different channel for pull and push to help channel cache to reduce overhead
       channel: options.channel || await this.channel({
         assert: {
           // create exclusive response queue
-          [responseQueue]: {
-            conflict: (options.push && options.push.replyTo) ? 'ignore' : 'raise',
-            exclusive: true,
-            durable: true,
-            autoDelete: true, // avoids zombie result queues
-            arguments: {
-              messageTtl: timeout,
-              expires: timeout,
-            },
-          },
+          ...responseQueue.assert,
           // ensure request queue is available
           [queue]: {
             conflict: 'ignore',
@@ -571,27 +607,35 @@ export class AMQPConnector
         prefetch: 1,
       }),
       ...options,
-      timeout,
+      timeout: responseQueue.timeout,
       pull: {
         correlationId,
         exclusive: true,
+        passive: true, // do not use get
+        discard: true, // do not requeue invalid messages
         ...options.pull,
       },
       push: {
         correlationId,
-        replyTo: responseQueue,
+        replyTo: responseQueue.name,
         ...options.push,
       },
     };
     try {
-      try {
-        await commonOptions.channel.connect(); // ensure response queue is created
-        await this.push(queue, type, content, commonOptions);
-        return await this.pull(responseQueue, null, commonOptions);
-      } finally {
-        await this.dispose(responseQueue);
+      const { elapsed } = await Timer.wrap(() => this.push(queue, type, content, commonOptions));
+      if (!commonOptions.timeout) { // only with replyTo
+        return await this.pull(responseQueue.name, null, commonOptions);
       }
+      const pullOptions = {
+        ...commonOptions,
+        timeout: Math.max(0, Math.ceil(commonOptions.timeout - elapsed)),
+      };
+      if (pullOptions.timeout) {
+        return await this.pull(responseQueue.name, null, pullOptions);
+      }
+      throw new TimeoutError(`Timeout after ${commonOptions.timeout}ms`);
     } finally {
+      await this.pushQueue(responseQueue, commonOptions.channel);
       if (!options.pull) await commonOptions.channel.disconnect();
     }
   }

@@ -13,7 +13,31 @@ export type PromiseAccumulatorPromiseLike<T> =
   | PromiseAccumulatorResult<T>;
 
 export interface PromiseAccumulatorOptions {
-  autocleanup?: boolean;
+  autoCleanup?: boolean;
+}
+
+export class Timer {
+  protected hrstart: [number, number];
+  constructor() {
+    this.hrstart = process.hrtime();
+  }
+  protected toMs(hrtime: [number, number]): number {
+    return hrtime[0] * 1e3 + hrtime[1] * 1e-6;
+  }
+  get start(): number {
+    return this.toMs(this.hrstart);
+  }
+  get elapsed(): number {
+    return this.toMs(process.hrtime(this.hrstart));
+  }
+  static async wrap<T>(
+    fnc: () => Promise<T> | T,
+  ): Promise<{ result:T, start: number, elapsed: number }> {
+    const timer = new Timer();
+    const result = await fnc();
+    const elapsed = timer.elapsed;
+    return { result, elapsed, start: timer.start };
+  }
 }
 
 export class PromiseAccumulator<T = any> implements PromiseLike<PromiseAccumulatorResult<T>[]> {
@@ -37,7 +61,7 @@ export class PromiseAccumulator<T = any> implements PromiseLike<PromiseAccumulat
 
   push(...promises: PromiseAccumulatorPromiseLike<T>[]) {
     this.promises.push(...promises);
-    if (this.options.autocleanup) {
+    if (this.options.autoCleanup) {
       for (const promise of promises) {
         Promise.resolve(promise).then(() => this.remove(promise));
       }
@@ -166,6 +190,23 @@ export async function shhh<T>(fnc: () => PromiseLike<T> | T): Promise<T | void> 
   try {
     return await Promise.resolve(fnc()).catch(() => {});
   } catch (e) {}
+}
+
+export async function withRetries<T>(
+  fnc: () => PromiseLike<T> | T,
+  retries: number = 10,
+  retry: (e: Error) => Promise<boolean> | boolean = () => true,
+): Promise<T> {
+  let remaining = retries;
+  while (true) {
+    try {
+      return await fnc();
+    } catch (e) {
+      if (remaining < 1) throw e;
+      if (!await retry(e)) throw e;
+      remaining -= 1;
+    }
+  }
 }
 
 export async function withDomain<T>(

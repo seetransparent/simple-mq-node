@@ -18,7 +18,7 @@ export class AMQPMockQueue {
     public options: amqp.Options.AssertQueue,
     public messages: amqp.Message[] = [],
     public consumers: AMQPMockConsumer[] = [],
-    public pendings: Set<number> = new Set(),
+    public pending: Set<number> = new Set(),
   ) { }
 
   process() {
@@ -42,7 +42,7 @@ export class AMQPMockQueue {
     else message.fields.messageCount = this.messages.length;
 
     // add to need-to-ack list
-    if (!options || !options.noAck) this.pendings.add(message.fields.deliveryTag);
+    if (!options || !options.noAck) this.pending.add(message.fields.deliveryTag);
 
     return message;
   }
@@ -50,12 +50,22 @@ export class AMQPMockQueue {
   addMessage(message: amqp.Message): amqp.Message {
     this.messages.push(message);
     process.nextTick(() => this.process());
+    const { deliveryTag } = (message.fields || {}) as amqp.ConsumeMessageFields;
+    this.pending.delete(deliveryTag);
     return message;
   }
 
   ackMessage(message: amqp.Message, allUpTo?: boolean): amqp.Message {
-    if (allUpTo) this.pendings.clear();
-    else this.pendings.delete(message.fields.deliveryTag);
+    // TODO: ack notify
+    if (allUpTo) this.pending.clear();
+    else this.pending.delete(message.fields.deliveryTag);
+    return message;
+  }
+
+  delMessage(message: amqp.Message, allUpTo?: boolean): amqp.Message {
+    // TODO: reject notify
+    if (allUpTo) this.pending.clear();
+    else this.pending.delete(message.fields.deliveryTag);
     return message;
   }
 
@@ -108,11 +118,13 @@ implements AMQPDriverConnection {
   public mockChannels: AMQPMockChannel[] = [];
   public createdChannels: number = 0;
   public closedChannels: number = 0;
-  public slow: boolean = true;
+  public createdQueues: number = 0;
+  public removedQueues: number = 0;
+  public slow: boolean = false;
 
   constructor(options: { slow?: boolean } = {}) {
     super();
-    this.slow = options.slow !== false;
+    this.slow = !!options.slow;
   }
 
   async close(): Promise<void> {
@@ -155,6 +167,7 @@ implements AMQPDriverConnection {
     try {
       return this.getQueue(exchange, routingKey);
     } catch (e) {
+      this.createdQueues += 1;
       const name = [exchange, routingKey].filter(x => x).join(':');
       return this.queues[name] = new AMQPMockQueue(name, options);
     }
@@ -287,6 +300,7 @@ implements AMQPDriverConfirmChannel {
     const messageCount = queue.messages.length;
     if (options.ifEmpty && messageCount) return { messageCount };
     delete this.connection.queues[name];
+    this.connection.removedQueues += 1;
     return { messageCount };
   }
 
@@ -384,11 +398,13 @@ implements AMQPDriverConfirmChannel {
 
   reject(message: amqp.Message, requeue?: boolean): void {
     this.wannaFail('reject');
+    const queue = this.connection
+      .getOrCreateQueue(message.fields.exchange, message.fields.routingKey);
     if (requeue) {
       message.fields.redelivered = true;
-      this.connection
-        .getOrCreateQueue(message.fields.exchange, message.fields.routingKey)
-        .addMessage(message);
+      queue.addMessage(message);
+    } else {
+      queue.delMessage(message);
     }
   }
 }

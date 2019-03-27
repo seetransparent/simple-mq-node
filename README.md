@@ -56,6 +56,49 @@ async function main () {
 }
 ```
 
+## Setup an RPC consumer
+
+```typescript
+import { AMQPConnector } from 'simple-mq-node';
+
+async function main () {
+  const connector = AMQPConnector({
+    uri: 'amqp://localhost',
+  });
+  try {
+    await connector.consume(queue, null, (message) => {
+      console.log(message.content.toString());
+      console.log(JSON.stringify(message));
+      return {
+        break: message.content.toString() === 'exit',
+        content: Buffer.from(`Received ${message.content.toString()}`),
+      };
+    });
+  } finally {
+    await channel.disconnect();
+  }
+}
+```
+
+## Send RPC request (and wait its response)
+
+```typescript
+import { AMQPConnector } from 'simple-mq-node';
+
+async function main () {
+  const connector = AMQPConnector({
+    uri: 'amqp://localhost',
+  });
+  try {
+    const response = await connector.rpc(queue, null, Buffer.from('my-message'));
+    console.log(response.content.toString());
+    console.log(JSON.stringify(response));
+  } finally {
+    await channel.disconnect();
+  }
+}
+```
+
 ## Pushing and consuming a message (RPC)
 
 ```typescript
