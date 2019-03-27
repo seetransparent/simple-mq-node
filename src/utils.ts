@@ -13,7 +13,7 @@ export type PromiseAccumulatorPromiseLike<T> =
   | PromiseAccumulatorResult<T>;
 
 export interface PromiseAccumulatorOptions {
-  autocleanup?: boolean;
+  autoCleanup?: boolean;
 }
 
 export class Timer {
@@ -61,7 +61,7 @@ export class PromiseAccumulator<T = any> implements PromiseLike<PromiseAccumulat
 
   push(...promises: PromiseAccumulatorPromiseLike<T>[]) {
     this.promises.push(...promises);
-    if (this.options.autocleanup) {
+    if (this.options.autoCleanup) {
       for (const promise of promises) {
         Promise.resolve(promise).then(() => this.remove(promise));
       }

@@ -30,7 +30,7 @@ export class ConnectionManager<T> {
     options: ConnectionManagerOptions<T>,
   ) {
     this.connectionOptions = this.withConnectionDefaults(options);
-    this.connectionPromises = new PromiseAccumulator([], { autocleanup: true });
+    this.connectionPromises = new PromiseAccumulator([], { autoCleanup: true });
   }
 
   protected withConnectionDefaults<T extends AnyObject>(options: T): FullConnectOptions & T {
