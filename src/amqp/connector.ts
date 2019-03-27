@@ -110,8 +110,11 @@ export class AMQPConnector
         return connection;
       },
       disconnect: async (connection) => {
+        console.log('remove named listener');
         removeNamedListener(connection, 'error', 'main');
+        console.log('close');
         await connection.close();
+        console.log('disconnected');
       },
       name: '',
       exchange: '',
