@@ -195,21 +195,18 @@ export async function shhh<T>(fnc: () => PromiseLike<T> | T): Promise<T | void> 
 export async function withRetries<T>(
   fnc: () => PromiseLike<T> | T,
   retries: number = 10,
-  onRetry: (e: Error) => Promise<boolean> | boolean = () => true,
+  retry: (e: Error) => Promise<boolean> | boolean = () => true,
 ): Promise<T> {
-  let error: Error | undefined;
-  let retry = 0;
+  let remaining = retries;
   while (true) {
     try {
       return await fnc();
     } catch (e) {
-      error = e;
-      retry += 1;
-      if (retry <= retries && await onRetry(e)) continue;
-      break;
+      if (remaining < 1) throw e;
+      if (!await retry(e)) throw e;
+      remaining -= 1;
     }
   }
-  throw error;
 }
 
 export async function withDomain<T>(
