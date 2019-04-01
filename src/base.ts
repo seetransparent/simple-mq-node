@@ -55,7 +55,7 @@ export class ConnectionManager<T> {
   }
 
   async connect(options: ConnectOptions = {}): Promise<T> {
-    const { retries, delay, connect, disconnect, timeout, guard } = this.withConnectionDefaults({
+    const { retries, delay, connect, timeout, guard } = this.withConnectionDefaults({
       ...this.connectionOptions,
       ...options,
     });
