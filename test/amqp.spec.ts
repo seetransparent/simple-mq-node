@@ -2,8 +2,56 @@ import * as lib from '../src/main';
 import * as errors from '../src/errors';
 import * as mock from '../src/amqp/driver-mock';
 import { AnyObject } from '../src/types';
+import { resolveConnection } from '../src/amqp/utils';
 
 describe('amqp', () => {
+  describe('AMQPChannel', () => {
+    describe('retryable', () => {
+      it('detects 404 errors', () => {
+        const existing: string[] = ['myqueue'];
+        const removal: string[] = [];
+        const connection = new mock.AMQPMockConnection();
+        const channel = new lib.AMQPConfirmChannel({
+          connect: () => connection.createConfirmChannel(),
+          disconnect: c => c.close(),
+          queueFilter: {
+            has: key => existing.indexOf(key) > -1,
+            add: () => {},
+            delete: key => removal.push(key),
+          },
+          check: ['myqueue'],
+        });
+        const error = new Error(
+          'Channel closed by server: 404(NOT - FOUND) with message '
+          + 'NOT_FOUND - no queue \'myqueue\' in vhost \'/\'',
+        );
+        expect(channel.retryable(error)).toBeTruthy();
+        expect(removal).toContain('myqueue');
+      });
+      it('avoids connection checkQueue 404 error', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const channel = new lib.AMQPConfirmChannel({
+          connect: () => connection.createConfirmChannel(),
+          disconnect: c => c.close(),
+          check: ['myqueue'],
+        });
+        await expect(channel.connect()).rejects.toThrowError(/404\(NOT - FOUND\)/);
+        expect(connection.createdChannels).toBe(1);
+      });
+      it('detects concurrency error', () => {
+        const connection = new mock.AMQPMockConnection();
+        const channel = new lib.AMQPConfirmChannel({
+          connect: () => connection.createConfirmChannel(),
+          disconnect: c => c.close(),
+        });
+        const error = new Error(
+          'Connection closed: 504(CHANNEL - ERROR) with message '
+          + '"CHANNEL_ERROR - second \'channel.open\' seen"',
+        );
+        expect(channel.retryable(error)).toBeTruthy();
+      });
+    });
+  });
   describe('AMQPConnector', () => {
     describe('connect', () => {
       it('retries errors', async () => {
@@ -28,8 +76,39 @@ describe('amqp', () => {
           'Connection closed: 504(CHANNEL - ERROR) with message '
           + '"CHANNEL_ERROR - second \'channel.open\' seen"',
         );
-        setTimeout(() => delete connection.failing.createConfirmChannel, 200);
+        setTimeout(() => delete connection.failing.createConfirmChannel, 10);
         await expect(connector.channel()).resolves.toBeTruthy();
+      });
+
+      it('does not retry network errors', async () => {
+        class MyError extends Error { }
+
+        let attempt = 0;
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connectionDelay: 0,
+          connect() {
+            attempt += 1;
+            return Promise.reject(new MyError('Error: getaddrinfo EAI_AGAIN'));
+          },
+        });
+        await expect(connector.ping()).rejects.toBeInstanceOf(MyError);
+        expect(attempt).toEqual(1);
+      });
+
+      it('does not retry timeout errors', async () => {
+        let attempt = 0;
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connectionDelay: 0,
+          timeout: 100,
+          connect: () => {
+            attempt += 1;
+            return new Promise(() => {});
+          },
+        });
+        await expect(connector.ping()).rejects.toBeInstanceOf(errors.TimeoutError);
+        expect(attempt).toEqual(1);
       });
 
       it('limit retries', async () => {
@@ -47,7 +126,7 @@ describe('amqp', () => {
         });
         await expect(connector.push('q', 'msg', Buffer.from('test')))
           .rejects.toBe(error);
-        expect(() => connection.getQueue('', 'q')).toThrow('queue q does not exist');
+        expect(() => connection.getQueue('', 'q')).toThrow(/NOT_FOUND - no queue 'q' in vhost/);
         expect(attempt).toBe(4);
       });
 
@@ -113,7 +192,7 @@ describe('amqp', () => {
         const connector = new lib.AMQPConnector({ name: 'test', connect: () => connection });
         try {
           connection.addMessage('', queue, Buffer.from('ok'));
-          const pending = connection.getQueue('', queue).pendings;
+          const { pending } = connection.getQueue('', queue);
           const channel = await connector.channel();
           expect(pending.size).toBe(0);
           const unacked = await connector.pull(queue, null, { channel, pull: { autoAck: false } });
@@ -137,13 +216,16 @@ describe('amqp', () => {
         connection.addMessage('', queue, Buffer.from('ok'), { type: 'patata' });
         connection.addMessage('', queue, Buffer.from('other'), { type: 'pataton' });
 
-        const options = { timeout: 10 };
+        const options = { timeout: 50 };
 
         const consoleWarn = console.warn;
         console.warn = jest.fn();
 
         await expect(connector.pull(queue, 'patatita', options))
           .rejects.toBeInstanceOf(errors.TimeoutError);
+
+        expect(console.warn).toHaveBeenCalled();
+        console.warn = consoleWarn;
 
         await expect(connector.pull(queue, 'patata', options))
           .resolves.toMatchObject({ content: Buffer.from('ok') });
@@ -152,9 +234,6 @@ describe('amqp', () => {
           .resolves.toMatchObject({ content: Buffer.from('other') });
 
         await connector.disconnect();
-
-        expect(console.warn).toHaveBeenCalled();
-        console.warn = consoleWarn;
       });
 
       it('honors correlationId filter and timeout', async () => {
@@ -181,6 +260,47 @@ describe('amqp', () => {
 
         expect(console.warn).toHaveBeenCalled();
         console.warn = consoleWarn;
+      });
+
+      it('propagates server close', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connect: () => connection,
+        });
+
+        setTimeout(() => connection.getQueue('', 'q').closeConsumers(), 50);
+
+        const promise = connector.pull('q', 'correct', { timeout: 100 });
+        await expect(promise).rejects.toThrowError(errors.PullError);
+        await expect(promise).rejects.toThrowError(/closed by remote server/i);
+        await connector.disconnect();
+      });
+
+      it('propagates random errors', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connect: () => connection,
+        });
+        const error = new Error('Random network error');
+        const promise = connector.pull('q', 't', { timeout: 100 });
+
+        setTimeout(
+          async () => {
+            // select the working channel
+            [ // register errors
+              'connect',
+              'createConfirmChannel',
+              'consume',
+            ].forEach(op => connection.failing[op] = error);
+            connection.mockChannels.forEach(c => c.emit('error', error));
+          },
+          10,
+        );
+
+        await expect(promise).rejects.toBe(error);
+        await connector.disconnect();
       });
     });
 
@@ -233,10 +353,68 @@ describe('amqp', () => {
           await connector.disconnect();
         }
       });
+
+      it('reuses response queues', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connect: () => connection,
+        });
+        const rpc = async (queue: string, message: string) => {
+          const publisher = connector.rpc(queue, 'correct', Buffer.from(message));
+          await connector.consume(queue, null, (message) => {
+            return {
+              break: true,
+              content: message.content,
+            };
+          });
+          return await publisher;
+        };
+        await rpc('rpc-queue', 'patata');
+        await rpc('other-queue', 'patata');
+        await rpc('another-queue', 'patata');
+
+        // 3 publish, 1 response
+        expect(connection.removedQueues).toBe(0);
+        expect(connection.createdQueues).toBe(4);
+
+        await connector.disconnect();
+        expect(connection.removedQueues).toBe(1);
+      });
+
+      it('discard invalid messages on response queues', async () => {
+        const connection = new mock.AMQPMockConnection();
+        const connector = new lib.AMQPConnector({
+          name: 'test',
+          connect: () => connection,
+        });
+        const rpc = async (queue: string, message: string) => {
+          const publisher = connector.rpc(queue, 'correct', Buffer.from(message));
+          await connector.consume(queue, null, (message) => {
+            return {
+              break: true,
+              content: message.content,
+            };
+          });
+          return await publisher;
+        };
+        await rpc('rpc-queue', 'patata');
+        const queue = Object.keys(connection.queues).filter(x => /^response:/.test(x))[0];
+        await connector.push(queue, 'spurious', Buffer.from('nooope'));
+        const result = await rpc(queue, 'patata');
+        expect(result.content.toString()).toBe('patata');
+        expect(connection.queues[queue].messages).toHaveLength(0);
+
+        // 3 publish, 1 response
+        expect(connection.removedQueues).toBe(0);
+        expect(connection.createdQueues).toBe(3);
+
+        await connector.disconnect();
+      });
     });
 
     describe('consume', () => {
-      it('should counsume a meesage from rpc and return a value', async () => {
+      it('should consume a message from rpc and return a value', async () => {
         const connection = new mock.AMQPMockConnection();
         const connectorRPC = new lib.AMQPConnector({
           name: 'test-rpc',
@@ -274,16 +452,18 @@ describe('amqp', () => {
     });
 
     describe('cache', () => {
-      it('reuses channels based on config', async () => {
+      it('reuses channels', async () => {
         const connection = new mock.AMQPMockConnection();
         const connector = new lib.AMQPConnector({ name: 'test', connect: () => connection });
         await connector.push('q', 'msg', Buffer.from('test'));
         await connector.push('q', 'msg', Buffer.from('test'));
         await connector.push('q', 'msg', Buffer.from('test'));
         await connector.push('q', 'msg', Buffer.from('test'));
-        expect(connection.channels).toHaveLength(1);
         await connector.push('w', 'msg', Buffer.from('test'));
-        expect(connection.channels).toHaveLength(2);
+        await connector.disconnect(); // banned connection flush
+        expect(connection.createdChannels).toBe(3); // 2 failed checks, 1 alive
+        expect(connection.closedChannels).toBe(2); // 2 failed checks
+        expect(connection.mockChannels).toHaveLength(1); // 1 alive
       });
 
       it('expires old caches (honoring maxCacheSize)', async () => {
@@ -293,14 +473,29 @@ describe('amqp', () => {
           channelCacheSize: 3,
           connect: () => connection,
         });
-        await connector.push('a', 'msg', Buffer.from('test'));
-        await connector.push('b', 'msg', Buffer.from('test'));
-        await connector.push('c', 'msg', Buffer.from('test'));
-        await connector.push('d', 'msg', Buffer.from('test'));
-        await connector.push('e', 'msg', Buffer.from('test'));
+        const channels = await Promise.all([
+          connector.channel(),
+          connector.channel(),
+          connector.channel(),
+          connector.channel(),
+          connector.channel(),
+        ]);
+
+        for (const channel of channels) {
+          await channel.connect();
+        }
+
         expect(connection.createdChannels).toBe(5);
-        expect(connection.closedChannels).toBe(2);  // not very
-        expect(connection.channels).toHaveLength(3);
+        expect(connection.closedChannels).toBe(0);
+        expect(connection.mockChannels).toHaveLength(5);
+
+        for (const channel of channels) {
+          await channel.disconnect();
+        }
+
+        expect(connection.createdChannels).toBe(5);
+        expect(connection.closedChannels).toBe(2);
+        expect(connection.mockChannels).toHaveLength(3);
       });
     });
 
@@ -310,6 +505,15 @@ describe('amqp', () => {
         const connector = new lib.AMQPConnector({ name: 'test', connect: () => connection });
 
         await expect(connector.ping()).resolves.toBeUndefined();
+      });
+    });
+  });
+
+  describe('utils', () => {
+    describe('resolveConnection', () => {
+      it('should resolve hosts', async () => {
+        const { hostname } = await resolveConnection('amqp://localhost');
+        expect(hostname).toBe('127.0.0.1');
       });
     });
   });

@@ -7,9 +7,15 @@ export namespace AMQPDriverConfirmChannel {
     'cancel' | 'prefetch' | 'ack' | 'reject';
 }
 
-export interface AMQPDriverConfirmChannel
-  extends Pick<events.EventEmitter, 'once' | 'removeListener'>
-{
+export interface AMQPDriverConfirmChannel extends events.EventEmitter {
+  // ours
+  _banned?: Error;
+  _expiration?: number;
+
+  // amqplib private
+  connection: events.EventEmitter; // not AMQPDriverConnection!
+  ch: number;
+
   // had to rewrite all these interface methods to get rid of bluebird
   close(): PromiseLike<void>;
 
@@ -57,7 +63,7 @@ export interface AMQPDriverConfirmChannel
 
 export interface AMQPDriverConnection<
   T extends AMQPDriverConfirmChannel = AMQPDriverConfirmChannel,
-> {
+> extends events.EventEmitter {
   close(): PromiseLike<void>;
   createConfirmChannel(): PromiseLike<T>;
 }

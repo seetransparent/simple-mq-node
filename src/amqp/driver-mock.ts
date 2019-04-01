@@ -14,10 +14,11 @@ interface AMQPMockConsumer {
 
 export class AMQPMockQueue {
   constructor(
+    public name: string,
     public options: amqp.Options.AssertQueue,
     public messages: amqp.Message[] = [],
     public consumers: AMQPMockConsumer[] = [],
-    public pendings: Set<number> = new Set(),
+    public pending: Set<number> = new Set(),
   ) { }
 
   process() {
@@ -41,7 +42,7 @@ export class AMQPMockQueue {
     else message.fields.messageCount = this.messages.length;
 
     // add to need-to-ack list
-    if (!options || !options.noAck) this.pendings.add(message.fields.deliveryTag);
+    if (!options || !options.noAck) this.pending.add(message.fields.deliveryTag);
 
     return message;
   }
@@ -49,12 +50,22 @@ export class AMQPMockQueue {
   addMessage(message: amqp.Message): amqp.Message {
     this.messages.push(message);
     process.nextTick(() => this.process());
+    const { deliveryTag } = (message.fields || {}) as amqp.ConsumeMessageFields;
+    this.pending.delete(deliveryTag);
     return message;
   }
 
   ackMessage(message: amqp.Message, allUpTo?: boolean): amqp.Message {
-    if (allUpTo) this.pendings.clear();
-    else this.pendings.delete(message.fields.deliveryTag);
+    // TODO: ack notify
+    if (allUpTo) this.pending.clear();
+    else this.pending.delete(message.fields.deliveryTag);
+    return message;
+  }
+
+  delMessage(message: amqp.Message, allUpTo?: boolean): amqp.Message {
+    // TODO: reject notify
+    if (allUpTo) this.pending.clear();
+    else this.pending.delete(message.fields.deliveryTag);
     return message;
   }
 
@@ -78,29 +89,42 @@ export class AMQPMockQueue {
     const alive = this.consumers.filter(consumer => consumer.consumerTag !== consumerTag);
     return this.consumers.splice(0, this.consumers.length, ...alive)[0];
   }
+
+  closeConsumers() {
+    this.consumers
+      .splice(0, this.consumers.length)
+      .forEach(consumer => consumer.handler(null));
+  }
 }
 
 export class AMQPMockBase extends events.EventEmitter {
   public messageCounter: number = 0;
   public failing: { [name: string]: Error } = {};
+
+  wannaFail(method: string) {
+    if (this.failing[method]) throw this.failing[method];
+  }
+}
+
+export interface AMQPRawMockChannel {
+  channel: AMQPMockChannel;
 }
 
 export class AMQPMockConnection
 extends AMQPMockBase
 implements AMQPDriverConnection {
   public queues: { [name: string]: AMQPMockQueue } = {};
-  public channels: AMQPMockChannel[] = [];
+  public channels: (AMQPRawMockChannel | null)[] = [];
+  public mockChannels: AMQPMockChannel[] = [];
   public createdChannels: number = 0;
   public closedChannels: number = 0;
-  public slow: boolean = true;
+  public createdQueues: number = 0;
+  public removedQueues: number = 0;
+  public slow: boolean = false;
 
   constructor(options: { slow?: boolean } = {}) {
     super();
-    this.slow = options.slow !== false;
-  }
-
-  wannaFail(method: string) {
-    if (this.failing[method]) throw this.failing[method];
+    this.slow = !!options.slow;
   }
 
   async close(): Promise<void> {
@@ -110,7 +134,13 @@ implements AMQPDriverConnection {
   async createConfirmChannel(): Promise<AMQPMockChannel> {
     this.wannaFail('createConfirmChannel');
     const channel = new AMQPMockChannel({ connection: this, confirm: true });
-    this.channels.push(channel);
+
+    // allocation logic
+    const index = this.channels.indexOf(null);
+    channel.ch = index > -1 ? index : this.channels.length;
+
+    this.mockChannels.push(channel);
+    this.channels[channel.ch] = { channel };
     this.createdChannels += 1;
     return channel;
   }
@@ -122,7 +152,11 @@ implements AMQPDriverConnection {
     const name = [exchange, routingKey].filter(x => x).join(':');
     const existing = this.queues[name];
     if (existing) return existing;
-    throw new Error(`queue ${routingKey} does not exist`);
+
+    throw new Error(
+      'Channel closed by server: 404 (NOT-FOUND) with message '
+      + `"NOT_FOUND - no queue '${routingKey}' in vhost '/'"`,
+    );
   }
 
   getOrCreateQueue(
@@ -133,8 +167,9 @@ implements AMQPDriverConnection {
     try {
       return this.getQueue(exchange, routingKey);
     } catch (e) {
+      this.createdQueues += 1;
       const name = [exchange, routingKey].filter(x => x).join(':');
-      return this.queues[name] = new AMQPMockQueue(options);
+      return this.queues[name] = new AMQPMockQueue(name, options);
     }
   }
 
@@ -161,7 +196,7 @@ implements AMQPDriverConnection {
         userId: undefined,
         appId: undefined,
         clusterId: null,
-        timestamp: new Date(),
+        timestamp: Date.now(),
         correlationId: undefined,
         replyTo: undefined,
         expiration: undefined,
@@ -181,6 +216,7 @@ extends AMQPMockBase
 implements AMQPDriverConfirmChannel {
   public confirm: boolean;
   public connection: AMQPMockConnection;
+  public ch: number;
   protected errored: Error;
   protected closed: boolean;
 
@@ -197,18 +233,22 @@ implements AMQPDriverConfirmChannel {
     this.closed = false;
     this.once('error', (e) => {
       this.errored = e;
-      if (!this.closed) this.emit('close');
+      if (!this.closed) process.nextTick(() => this.emit('close'));
     });
     this.once('close', () => {
       this.closed = true;
     });
   }
 
+  get alive() {
+    return !this.errored && !this.closed;
+  }
+
   wannaFail(method: string) {
     if (this.closed) throw new Error(`operation ${method} on closed channel`);
     if (this.errored) throw this.errored;
     try {
-      if (this.failing[method]) throw this.failing[method];
+      super.wannaFail(method);
       this.connection.wannaFail(`channel.${method}`);
     } catch (e) {
       this.emit('error', e);
@@ -218,8 +258,9 @@ implements AMQPDriverConfirmChannel {
 
   async close(): Promise<void> {
     this.wannaFail('close');
-    const index = this.connection.channels.indexOf(this);
-    this.connection.channels.splice(index, 1);
+    const index = this.connection.mockChannels.indexOf(this);
+    this.connection.mockChannels.splice(index, 1);
+    this.connection.channels[this.ch] = null;
     this.connection.closedChannels += 1;
     this.closed = true;
     this.emit('close');
@@ -240,7 +281,12 @@ implements AMQPDriverConfirmChannel {
 
   async checkQueue(name: string): Promise<amqp.Replies.AssertQueue> {
     this.wannaFail('checkQueue');
-    if (!this.connection.queues[name]) throw new Error('queue not found'); // TODO
+    if (!this.connection.queues[name]) {
+      throw new Error(
+        'Channel closed by server: 404(NOT - FOUND) with message '
+        + `NOT_FOUND - no queue \'${name}\' in vhost \'/\'`,
+      );
+    }
     return this.assertQueue(name);
   }
 
@@ -254,6 +300,7 @@ implements AMQPDriverConfirmChannel {
     const messageCount = queue.messages.length;
     if (options.ifEmpty && messageCount) return { messageCount };
     delete this.connection.queues[name];
+    this.connection.removedQueues += 1;
     return { messageCount };
   }
 
@@ -287,7 +334,10 @@ implements AMQPDriverConfirmChannel {
       this.addMessage(exchange, routingKey, content, options, callback);
       return true;
     }
-    setTimeout(() => this.addMessage(exchange, routingKey, content, options, callback), 500);
+    setTimeout(
+      () => this.addMessage(exchange, routingKey, content, options, callback),
+      this.connection.slow ? 500 : 0,
+    );
     return false;
   }
 
@@ -320,14 +370,12 @@ implements AMQPDriverConfirmChannel {
       const consumer = q.addConsumer(onMessage, options);
       return { consumerTag: consumer.consumerTag };
     }
-    this.emit('error', new Error(
-      'Channel closed by server: 404 (NOT-FOUND) with message '
-      + `"NOT_FOUND - no queue '${queue}' in vhost '/'"`,
-    ));
-    throw new Error(
+    const error = new Error(
       'Channel closed by server: 404 (NOT-FOUND) with message '
       + `"NOT_FOUND - no queue '${queue}' in vhost '/'"`,
     );
+    this.emit('error', error);
+    throw error;
   }
 
   async cancel(consumerTag: string): Promise<amqp.Replies.Empty> {
@@ -337,6 +385,7 @@ implements AMQPDriverConfirmChannel {
   }
 
   async prefetch(count: number, global?: boolean): Promise<amqp.Replies.Empty> {
+    this.wannaFail('prefetch');
     return {};
   }
 
@@ -348,11 +397,14 @@ implements AMQPDriverConfirmChannel {
   }
 
   reject(message: amqp.Message, requeue?: boolean): void {
+    this.wannaFail('reject');
+    const queue = this.connection
+      .getOrCreateQueue(message.fields.exchange, message.fields.routingKey);
     if (requeue) {
       message.fields.redelivered = true;
-      this.connection
-        .getOrCreateQueue(message.fields.exchange, message.fields.routingKey)
-        .addMessage(message);
+      queue.addMessage(message);
+    } else {
+      queue.delMessage(message);
     }
   }
 }

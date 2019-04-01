@@ -225,6 +225,9 @@ declare module 'amqplib' {
   }
 
   export interface Channel extends events.EventEmitter {
+    connection: Connection;
+    ch: number;
+
     close(): PromiseLike<void>;
 
     assertQueue(queue: string, options?: Options.AssertQueue): PromiseLike<Replies.AssertQueue>;
