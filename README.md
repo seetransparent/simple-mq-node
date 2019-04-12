@@ -1,11 +1,13 @@
-# Message queue abstraction library
+# simple-mq-node
 
-This module implements a common interface for message queue libraries,
+Message queue abstraction library
+
+This module provides a simple common interface for message queue libraries,
 providing pull/push/rpc methods.
 
 Options, though, are driver-specific.
 
-Currently only supporting AMQP.
+Currently, only AMQP is implemented (via `amqplib.node`).
 
 ```typescript
 import { AMQPConnector } from 'simple-mq-node';
@@ -56,7 +58,25 @@ async function main () {
 }
 ```
 
-## Setup an RPC consumer
+## Remove a queue and all its messages
+
+```typescript
+import { AMQPConnector } from 'simple-mq-node';
+
+async function main () {
+  const connector = AMQPConnector({
+    uri: 'amqp://localhost',
+  });
+  await connector.dispose('test-queue');
+}
+```
+
+## RPC
+
+Since the remote procedure call (RPC) is such a common use-case, this module
+implements this abstraction for convenience.
+
+### [RPC] Setup a consumer
 
 ```typescript
 import { AMQPConnector } from 'simple-mq-node';
@@ -80,7 +100,7 @@ async function main () {
 }
 ```
 
-## Send RPC request (and wait its response)
+### [RPC] Send request (and wait its response)
 
 ```typescript
 import { AMQPConnector } from 'simple-mq-node';
@@ -99,36 +119,11 @@ async function main () {
 }
 ```
 
-## Pushing and consuming a message (RPC)
+## Setup an specific channel and use it (AMQP-specific)
 
-```typescript
-import { AMQPConnector } from 'simple-mq-node';
-
-async function main () {
-  const connector = AMQPConnector({
-    uri: 'amqp://localhost',
-  });
-
-  const message = Buffer.from('this is my message');
-
-  const response = await connector.rpc('test-queue', 'test', message);
-}
-```
-
-## Remove a queue
-
-```typescript
-import { AMQPConnector } from 'simple-mq-node';
-
-async function main () {
-  const connector = AMQPConnector({
-    uri: 'amqp://localhost',
-  });
-  await connector.dispose('test-queue');
-}
-```
-
-## Setup a channel and use it manually (AMQP-specific)
+This is not really necessary on a normal use-case, as simple-mq-node provides
+automatic initialization logic for channels and queues, using both cache and
+optimization strategies to achieve optimal performance for most use-cases.
 
 ```typescript
 import { AMQPConnector } from 'simple-mq-node';

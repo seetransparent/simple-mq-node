@@ -351,7 +351,7 @@ implements AMQPDriverConfirmChannel {
       const message = q.pickMessage(null, options) as amqp.GetMessage;
       if (message) return message;
     }
-    // this behavior is really weird, but this is how protocol works
+    // this behavior somewhat weird, but this is how protocol works
     this.emit('error', new Error(
       'Channel closed by server: 404 (NOT-FOUND) with message '
       + `"NOT_FOUND - no queue '${queue}' in vhost '/'"`,

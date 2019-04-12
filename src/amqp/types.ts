@@ -13,7 +13,7 @@ export interface AMQPDriverConfirmChannel extends events.EventEmitter {
   _expiration?: number;
 
   // amqplib private
-  connection: events.EventEmitter; // not AMQPDriverConnection!
+  connection: events.EventEmitter; // Important: not AMQPDriverConnection
   ch: number;
 
   // had to rewrite all these interface methods to get rid of bluebird

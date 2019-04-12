@@ -86,7 +86,7 @@ export class AMQPConfirmChannel
     }
 
     if (e.message.indexOf('CHANNEL_ERROR - second \'channel.open\' seen') > -1) {
-      // amqplib is buggy as hell: https://github.com/squaremo/amqp.node/issues/441
+      // amqplib frame reusing logic is too naive: https://github.com/squaremo/amqp.node/issues/441
       return true;
     }
 
