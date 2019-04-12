@@ -1,6 +1,6 @@
 # simple-mq-node
 
-Message queue abstraction library
+Simple message queue abstraction library.
 
 This module provides a simple common interface for message queue libraries,
 providing pull/push/rpc methods.
